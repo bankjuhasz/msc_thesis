@@ -135,7 +135,7 @@ def main(args):
         trainer.fit(pl_model, datamodule, ckpt_path=args.resume_checkpoint)
     else:
         trainer.fit(pl_model, datamodule)
-    ########
+    #######
 
     trainer.test(pl_model, datamodule)
 
