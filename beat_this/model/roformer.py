@@ -76,7 +76,7 @@ class Attend(nn.Module):
             q = q * (self.scale / default_scale)
 
         return F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout if self.training else 0.0
+            q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal = True # causal mask added
         )
 
 

@@ -307,13 +307,19 @@ class PLBeatThis(LightningModule):
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         # remove _orig_mod prefixes for compiled models
-        state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
+        #state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def state_dict(self, *args, **kwargs):
         state_dict = super().state_dict(*args, **kwargs)
+        print("\n\nKeys in state_dict (before modifications):\n", list(state_dict.keys()))
         # remove _orig_mod prefixes for compiled models
-        state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
+        '''
+        This removal of _orig_mod prefixes from the state_dict breaks compatibility with compiled models which expect
+        _orig_mod prefixes. By NOT removing them (hence commenting it out), we can use the checkpoints with compiled
+        models. However, this means that for uncompiled applications, the prefix has to be removed manually.
+        '''
+        #state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
         return state_dict
 
 

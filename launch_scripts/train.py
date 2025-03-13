@@ -18,9 +18,14 @@ def main(args):
     print(args)
 
     params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}"
+    params_str +="_CAUSAL_" # added
     if args.logger == "wandb":
+        if args.resume_checkpoint and args.resume_id:
+            wandb_args = dict(id=args.resume_id, resume="must")
+        else:
+            wandb_args = {}
         logger = WandbLogger(
-            project="beat_this", name=f"{args.name} {params_str}".strip()
+            project="msc_thesis", name=f"{args.name} {params_str}".strip()
         )
     else:
         logger = None
@@ -121,10 +126,17 @@ def main(args):
         log_every_n_steps=1,
         precision="16-mixed",
         accumulate_grad_batches=args.accumulate_grad_batches,
-        check_val_every_n_epoch=args.val_frequency,
+        check_val_every_n_epoch=args.val_frequency
     )
 
-    trainer.fit(pl_model, datamodule)
+     #########
+    # added in attempt to make resume-from-checkpoint work
+    if args.resume_checkpoint:
+        trainer.fit(pl_model, datamodule, ckpt_path=args.resume_checkpoint)
+    else:
+        trainer.fit(pl_model, datamodule)
+    ########
+
     trainer.test(pl_model, datamodule)
 
 
@@ -271,6 +283,20 @@ if __name__ == "__main__":
         default=0,
         help="Seed for the random number generators.",
     )
+    ##################
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training."
+    )
+    parser.add_argument(
+        "--resume_id",
+        type=str,
+        default="",
+        help="Optional wandb id to continue logging to."
+    )
+    ##################
 
     args = parser.parse_args()
 
