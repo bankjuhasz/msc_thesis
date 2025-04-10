@@ -98,6 +98,7 @@ def main(args):
         eval_trim_beats=args.eval_trim_beats,
         sum_head=args.sum_head,
         partial_transformers=args.partial_transformers,
+        causal_transformer=args.causal_transformer
     )
     for part in args.compile:
         if hasattr(pl_model.model, part):
@@ -295,6 +296,12 @@ if __name__ == "__main__":
         type=str,
         default="",
         help="Optional wandb id to continue logging to."
+    )
+    parser.add_argument(
+        "--causal-transformer",
+        type=str,
+        default=False,
+        help="Boolean. Determines whether causal mask is used in the attention mechanism."
     )
     ##################
 

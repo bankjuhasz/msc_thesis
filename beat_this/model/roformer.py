@@ -65,10 +65,11 @@ class FeedForward(Module):
 
 
 class Attend(nn.Module):
-    def __init__(self, dropout=0.0, scale=None):
+    def __init__(self, dropout=0.0, scale=None, causal_transformer=False):
         super().__init__()
         self.dropout = dropout
         self.scale = scale
+        self.causal_transformer = causal_transformer
 
     def forward(self, q, k, v):
         if exists(self.scale):
@@ -76,7 +77,7 @@ class Attend(nn.Module):
             q = q * (self.scale / default_scale)
 
         return F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal = True # causal mask added
+            q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal = self.causal_transformer # causal mask added
         )
 
 
@@ -89,6 +90,7 @@ class Attention(Module):
         dropout=0.0,
         rotary_embed=None,
         gating=True,
+        causal_transformer=False
     ):
         super().__init__()
         self.heads = heads
@@ -97,7 +99,7 @@ class Attention(Module):
 
         self.rotary_embed = rotary_embed
 
-        self.attend = Attend(dropout=dropout)
+        self.attend = Attend(dropout=dropout, causal_transformer=causal_transformer)
 
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=False)
@@ -149,6 +151,7 @@ class Transformer(Module):
         norm_output=True,
         rotary_embed=None,
         gating=True,
+        causal_transformer=False
     ):
         super().__init__()
         self.layers = ModuleList([])
@@ -165,6 +168,7 @@ class Transformer(Module):
                             dropout=attn_dropout,
                             rotary_embed=rotary_embed,
                             gating=gating,
+                            causal_transformer=causal_transformer
                         ),
                         ff,
                     ]
