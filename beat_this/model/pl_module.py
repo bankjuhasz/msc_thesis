@@ -314,7 +314,7 @@ class PLBeatThis(LightningModule):
 
     def state_dict(self, *args, **kwargs):
         state_dict = super().state_dict(*args, **kwargs)
-        print("\n\nKeys in state_dict (before modifications):\n", list(state_dict.keys()))
+        #print("\n\nKeys in state_dict (before modifications):\n", list(state_dict.keys()))
         # remove _orig_mod prefixes for compiled models
         '''
         This removal of _orig_mod prefixes from the state_dict breaks compatibility with compiled models which expect

@@ -25,7 +25,7 @@ def main(args):
         else:
             wandb_args = {}
         logger = WandbLogger(
-            project="msc_thesis", name=f"{args.name} {params_str}".strip()
+            project="bank_juhasz_msc_thesis", name=f"{args.name} {params_str}".strip()
         )
     else:
         logger = None
@@ -264,7 +264,7 @@ if __name__ == "__main__":
         "--val",
         default=True,
         action=argparse.BooleanOptionalAction,
-        help="Train on all data, including validation data, escluding test data. The validation metrics will still be computed, but they won't carry any meaning.",
+        help="Train on all data, including validation data, excluding test data. The validation metrics will still be computed, but they won't carry any meaning.",
     )
     parser.add_argument(
         "--hung-data",
@@ -299,9 +299,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--causal-transformer",
-        type=str,
         default=False,
-        help="Boolean. Determines whether causal mask is used in the attention mechanism."
+        action=argparse.BooleanOptionalAction,
+        help="Determines whether causal mask is used in the attention mechanism."
     )
     ##################
 
