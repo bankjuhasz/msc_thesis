@@ -10,7 +10,7 @@ def main(args):
         print(f"Output path {args.output_path} already exists. Exiting.")
         return
 
-    # load the lightning checkpoit
+    # load the lightning checkpoint
     checkpoint = torch.load(args.input_path, map_location="cpu")
 
     # clean and keep only the keys "state_dict" and "datamodule" to save space

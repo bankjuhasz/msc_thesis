@@ -25,7 +25,7 @@ def main(args):
         else:
             wandb_args = {}
         logger = WandbLogger(
-            project="bank_juhasz_msc_thesis", name=f"{args.name} {params_str}".strip()
+            project="beat_this", name=f"{args.name} {params_str}".strip()
         )
     else:
         logger = None
