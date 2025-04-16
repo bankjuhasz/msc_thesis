@@ -17,8 +17,8 @@ def main(args):
     print("Starting a new run with the following parameters:")
     print(args)
 
-    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}"
-    params_str +="_CAUSAL_" # added
+    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}"
+
     if args.logger == "wandb":
         if args.resume_checkpoint and args.resume_id:
             wandb_args = dict(id=args.resume_id, resume="must")
@@ -98,7 +98,8 @@ def main(args):
         eval_trim_beats=args.eval_trim_beats,
         sum_head=args.sum_head,
         partial_transformers=args.partial_transformers,
-        causal_transformer=args.causal_transformer
+        causal_transformer=args.causal_transformer,
+        causal_convolution=args.causal_convolution,
     )
     for part in args.compile:
         if hasattr(pl_model.model, part):
@@ -302,6 +303,12 @@ if __name__ == "__main__":
         default=False,
         action=argparse.BooleanOptionalAction,
         help="Determines whether causal mask is used in the attention mechanism."
+    )
+    parser.add_argument(
+        "--causal-convolution",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Determines whether causal version of convolutions are used in the frontend."
     )
     ##################
 

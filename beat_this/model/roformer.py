@@ -32,6 +32,46 @@ class RMSNorm(Module):
         return F.normalize(x, dim=self.dim) * self.scale * self.gamma
 
 
+
+# Causal Convolution
+
+
+class CausalConvBlock(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride,
+                 padding,
+                 groups=1,
+                 bias=False):
+        super().__init__()
+
+        self.crop = kernel_size[1] - 1
+        self.padding = (padding[0], self.crop)
+
+        self.conv = nn.Conv2d(in_channels,
+                               out_channels,
+                               kernel_size,
+                               stride,
+                               groups=groups,
+                               padding=self.padding,
+                               bias=bias)
+
+    def forward(self, input):
+        """
+        Arguments:
+            input: (batch_size, in_channels, freq_bins, time_steps)
+
+        Returns:
+            x: (batch_size, out_channels, freq_bins, time_steps)
+        """
+
+        # pytorch only includes symmetric padding --> we are removing any padding from the right hand side (future)
+        x = self.conv(input)[:, :, :, :-self.crop]
+        return x
+
+
 # feedforward
 
 

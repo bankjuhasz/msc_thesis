@@ -23,7 +23,7 @@ def main(args):
         datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit)
         # create model and trainer
         model, trainer = plmodel_setup(
-            checkpoint, args.eval_trim_beats, args.dbn, args.gpu
+            checkpoint, args.eval_trim_beats, args.dbn, args.gpu, segment_metrics=args.segment_metrics
         )
         # predict
         metrics, dataset, preds, piece = compute_predictions(
@@ -32,21 +32,29 @@ def main(args):
 
         # compute averaged metrics
         averaged_metrics = {k: np.mean(v) for k, v in metrics.items()}
-        # compute metrics averaged by dataset
-        dataset_metrics = {
-            k: {d: np.mean(v[dataset == d]) for d in np.unique(dataset)}
-            for k, v in metrics.items()
-        }
+
+        if not model.hparams.segment_metrics:
+            # only compute dataset-specific metrics in non-segmented mode
+            # compute metrics averaged by dataset
+            dataset_metrics = {
+                k: {d: np.mean(v[dataset == d]) for d in np.unique(dataset)}
+                for k, v in metrics.items()
+            }
+        else:
+            # if segmented mode, we don't compute dataset-specific metrics
+            dataset_metrics = None
+
         # print for dataset
         print("Metrics")
         for k, v in averaged_metrics.items():
             print(f"{k}: {v}")
-        print("Dataset metrics")
-        for k, v in dataset_metrics.items():
-            print(k)
-            for d, value in v.items():
-                print(f"{d}: {value}")
-            print("------")
+        if dataset_metrics is not None:
+            print("Dataset metrics")
+            for k, v in dataset_metrics.items():
+                print(k)
+                for d, value in v.items():
+                    print(f"{d}: {value}")
+                print("------")
     else:  # multiple models
         if args.aggregation_type == "mean-std":
             # computing result variability for the same dataset and different model seeds
@@ -150,7 +158,7 @@ def datamodule_setup(checkpoint, num_workers, datasplit):
     return datamodule
 
 
-def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu):
+def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False):
     """
     Set up the pytorch lightning model and trainer for evaluation.
 
@@ -168,6 +176,7 @@ def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu):
         checkpoint["hyper_parameters"]["eval_trim_beats"] = eval_trim_beats
     if dbn is not None:
         checkpoint["hyper_parameters"]["use_dbn"] = dbn
+    checkpoint["hyper_parameters"]["segment_metrics"] = segment_metrics
 
     model = PLBeatThis(**checkpoint["hyper_parameters"])
     model.load_state_dict(checkpoint["state_dict"])
@@ -192,12 +201,33 @@ def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu):
 def compute_predictions(model, trainer, predict_dataloader):
     print("Computing predictions ...")
     out = trainer.predict(model, predict_dataloader)
-    metrics = [o[0] for o in out]
     preds = [o[1] for o in out]
     dataset = np.asarray([o[2][0] for o in out])
     piece = np.asarray([o[3][0] for o in out])
-    # convert metrics from list of per-batch dictionaries to a single dictionary with np arrays as values
-    metrics = {k: np.asarray([m[k] for m in metrics]) for k in metrics[0]}
+
+    if model.hparams.segment_metrics:
+        # return the segmented metrics
+        metrics_list = [o[0] for o in out]
+        all_pieces = []
+        for m in metrics_list:
+            if m["per_piece_segment_metrics"]:  # only add if non-empty
+                all_pieces.extend(m["per_piece_segment_metrics"])
+
+        # for each segment index (0,1,2) and for each metric present in that segment, create key
+        aggregated = {
+            f"Segment{seg_index + 1}_{metric}": np.asarray(
+                [piece_metrics[f"segment_{seg_index}"][metric] for piece_metrics in all_pieces]
+            )
+            for seg_index in range(3)
+            for metric in all_pieces[0][f"segment_{seg_index}"].keys()
+        }
+        # flat dictionary
+        metrics = aggregated
+    else:
+        metrics = [o[0] for o in out]
+        # convert metrics from list of per-batch dictionaries to a single dictionary with np arrays as values
+        metrics = {k: np.asarray([m[k] for m in metrics]) for k in metrics[0]}
+
     return metrics, dataset, preds, piece
 
 
@@ -244,6 +274,12 @@ if __name__ == "__main__":
         choices=("mean-std", "k-fold"),
         default="mean-std",
         help="Type of aggregation to use for multiple models; ignored if only one model is given",
+    )
+    parser.add_argument(
+        "--segment_metrics",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="If True, compute metrics separately for 3 10s segments within each 30s excerpt."
     )
 
     args = parser.parse_args()

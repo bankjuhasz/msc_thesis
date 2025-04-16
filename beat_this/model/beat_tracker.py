@@ -11,6 +11,7 @@ from rotary_embedding_torch import RotaryEmbedding
 from torch import nn
 
 from beat_this.model import roformer
+from beat_this.model.roformer import CausalConvBlock
 from beat_this.utils import replace_state_dict_key
 
 
@@ -45,7 +46,8 @@ class BeatThis(nn.Module):
         dropout: dict = {"frontend": 0.1, "transformer": 0.2},
         sum_head: bool = True,
         partial_transformers: bool = True,
-        causal_transformer=False
+        causal_transformer=False,
+        causal_convolution=False,
     ):
         super().__init__()
         # shared rotary embedding for frontend blocks and transformer blocks
@@ -53,7 +55,7 @@ class BeatThis(nn.Module):
 
         # create the frontend
         # - stem
-        stem = self.make_stem(spect_dim, stem_dim)
+        stem = self.make_stem(spect_dim, stem_dim, causal_convolution)
         spect_dim //= 4  # frequencies were convolved with stride 4
         # - three frontend blocks
         frontend_blocks = []
@@ -67,7 +69,8 @@ class BeatThis(nn.Module):
                     head_dim,
                     rotary_embed,
                     dropout["frontend"],
-                    causal_transformer
+                    causal_transformer,
+                    causal_convolution
                 )
             )
             dim *= 2
@@ -108,20 +111,30 @@ class BeatThis(nn.Module):
         self.apply(self._init_weights)
 
     @staticmethod
-    def make_stem(spect_dim: int, stem_dim: int) -> nn.Module:
+    def make_stem(spect_dim: int, stem_dim: int, causal_convolution: bool) -> nn.Module:
+
+        conv_layer = CausalConvBlock(
+            in_channels=1,
+            out_channels=stem_dim,
+            kernel_size=(4, 3),
+            stride=(4, 1),
+            padding=(0, 1),
+            bias=False
+        ) if causal_convolution else nn.Conv2d(
+            in_channels=1,
+            out_channels=stem_dim,
+            kernel_size=(4, 3),
+            stride=(4, 1),
+            padding=(0, 1),
+            bias=False,
+            )
+
         return nn.Sequential(
             OrderedDict(
                 rearrange_tf=Rearrange("b t f -> b f t"),
                 bn1d=nn.BatchNorm1d(spect_dim),
                 add_channel=Rearrange("b f t -> b 1 f t"),
-                conv2d=nn.Conv2d(
-                    in_channels=1,
-                    out_channels=stem_dim,
-                    kernel_size=(4, 3),
-                    stride=(4, 1),
-                    padding=(0, 1),
-                    bias=False,
-                ),
+                conv2d=conv_layer,
                 bn2d=nn.BatchNorm2d(stem_dim),
                 activation=nn.GELU(),
             )
@@ -135,12 +148,30 @@ class BeatThis(nn.Module):
         head_dim: int | None = 32,
         rotary_embed: RotaryEmbedding | None = None,
         dropout: float = 0.1,
-        causal_transformer: bool = False
+        causal_transformer: bool = False,
+        causal_convolution: bool = False,
     ) -> nn.Module:
         if partial_transformers and (head_dim is None or rotary_embed is None):
             raise ValueError(
                 "Must specify head_dim and rotary_embed for using partial_transformers"
             )
+
+        conv_layer = CausalConvBlock(
+            in_channels=in_dim,
+            out_channels=out_dim,
+            kernel_size=(2, 3),
+            stride=(2, 1),
+            padding=(0, 1),
+            bias=False
+        ) if causal_convolution else nn.Conv2d(
+            in_channels=in_dim,
+            out_channels=out_dim,
+            kernel_size=(2, 3),
+            stride=(2, 1),
+            padding=(0, 1),
+            bias=False,
+            )
+
         return nn.Sequential(
             OrderedDict(
                 partial=(
@@ -156,14 +187,7 @@ class BeatThis(nn.Module):
                     else nn.Identity()
                 ),
                 # conv block
-                conv2d=nn.Conv2d(
-                    in_channels=in_dim,
-                    out_channels=out_dim,
-                    kernel_size=(2, 3),
-                    stride=(2, 1),
-                    padding=(0, 1),
-                    bias=False,
-                ),
+                conv2d=conv_layer,
                 # out_channels : 64, 128, 256
                 # freqs : 16, 8, 4 (due to the stride=2)
                 norm=nn.BatchNorm2d(out_dim),
