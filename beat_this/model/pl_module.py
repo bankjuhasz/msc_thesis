@@ -41,7 +41,7 @@ class PLBeatThis(LightningModule):
         partial_transformers=True,
         causal_transformer=False,
         causal_convolution=False,
-        segment_metrics=False
+        segment_metrics=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -136,97 +136,76 @@ class PLBeatThis(LightningModule):
 
     def _compute_metrics_target(self, batch, postp_target, target, step):
 
+        def compute_item_segmented(pospt_pred, truth_orig_target):
+
+            # take the ground truth from the original version, so there are no quantization errors
+            piece_truth_time = np.frombuffer(truth_orig_target)
+
+            fps = self.hparams.fps
+            duration = batch['spect'].shape[1] / fps
+
+            # if the excerpt is <30s, skip piece -> no sense in evaluating short excerpts in 3 even shorter segments
+            if duration < 30:
+                return {}
+
+            eval_exc_start = (duration - 30) / 2 # start of central 30s to evaluate (regardless of val or test set)
+            segment_boundaries = [eval_exc_start + i * 10 for i in range(3 + 1)] # 10s segment boundaries inside central 30s
+
+            piece_metrics = {}
+            for seg in range(3):
+                start = segment_boundaries[seg]
+                end = segment_boundaries[seg + 1]
+                # filter predictions and truth for the current segment
+                preds_segment = pospt_pred[(pospt_pred >= start) & (pospt_pred < end)]
+                truth_segment = piece_truth_time[(piece_truth_time >= start) & (piece_truth_time < end)]
+                seg_metrics = self.metrics(truth_segment, preds_segment, step=step)
+                piece_metrics[f"segment_{seg}"] = seg_metrics
+            return piece_metrics
+
+
+        def compute_item(pospt_pred, truth_orig_target):
+            # take the ground truth from the original version, so there are no quantization errors
+            piece_truth_time = np.frombuffer(truth_orig_target)
+
+            # run evaluation
+            metrics = self.metrics(piece_truth_time, pospt_pred, step=step)
+            return metrics
+
         # if the input was not batched, postp_target is an array instead of a tuple of arrays
         # make it a tuple for consistency
         if not isinstance(postp_target, tuple):
             postp_target = (postp_target,)
 
-        ##############################################################
-        if self.hparams.segment_metrics:
-            # assume 30s corresponds to expected_frames frames
-            fps = self.hparams.fps
-            expected_duration = 30.0  # in seconds
-
-            # define segment boundaries in seconds
-            boundaries = [0, expected_duration / 3, 2 * expected_duration / 3, expected_duration]
-
-            def compute_segment_metrics(preds, truth, start, end, step):
-                truth = np.frombuffer(truth)  # convert ground truth from buffer to numpy array
-                # filter predictions and truth for the current segment
-                preds_segment = preds[(preds >= start) & (preds < end)]
-                truth_segment = truth[(truth >= start) & (truth < end)]
-                # trim beats for edge effects
-                truth_segment = mir_eval.beat.trim_beats(truth_segment, min_beat_time=self.eval_trim_beats)
-                preds_segment = mir_eval.beat.trim_beats(preds_segment, min_beat_time=self.eval_trim_beats)
-                if step == "val":
-                    fmeasure = mir_eval.beat.f_measure(truth_segment, preds_segment)
-                    cemgil = mir_eval.beat.cemgil(truth_segment, preds_segment)
-                    return {"F-measure": fmeasure, "Cemgil": cemgil}
-                elif step == "test":
-                    CMLc, CMLt, AMLc, AMLt = mir_eval.beat.continuity(truth_segment, preds_segment)
-                    fmeasure = mir_eval.beat.f_measure(truth_segment, preds_segment)
-                    cemgil = mir_eval.beat.cemgil(truth_segment, preds_segment)
-                    return {"F-measure": fmeasure, "Cemgil": cemgil, "CMLt": CMLt, "AMLt": AMLt}
-                else:
-                    raise ValueError("step must be 'val' or 'test'")
-
-
-            def compute_item(preds, truth_orig):
-                # convert truth from buffer to numpy array and check its duration
-                truth = np.frombuffer(truth_orig)
-                # if the excerpt is shorter than expected, skip this piece
-                if truth.size == 0 or truth[-1] < 28:
-                    # if the piece's duration is less than 30 seconds, skip it
-                    # we check if the last timestamp is smaller than 28
-                    return None
-                piece_metrics = {}
-                for seg in range(3):
-                    start = boundaries[seg]
-                    end = boundaries[seg + 1]
-                    seg_metrics = compute_segment_metrics(preds, truth_orig, start, end, step)
-                    piece_metrics[f"segment_{seg}"] = seg_metrics
-                return piece_metrics
-
-            with ThreadPoolExecutor() as executor:
-                piecewise_metrics = list(
-                    executor.map(
-                        compute_item,
-                        postp_target,   # predictions for each piece
-                        batch[f"truth_orig_{target}"]   # ground-truth buffers for each piece
-                    )
+        with ThreadPoolExecutor() as executor:
+            piecewise_metrics = list(
+                executor.map(
+                    compute_item_segmented if self.hparams.segment_metrics else compute_item,
+                    postp_target,
+                    batch[f"truth_orig_{target}"]
                 )
+            )
+
+        if self.hparams.segment_metrics:
             # remove pieces that were skipped (None returned)
             piecewise_metrics = [m for m in piecewise_metrics if m is not None]
 
-            # return the raw per-piece per-segment metrics
-            return {"per_piece_segment_metrics": piecewise_metrics}
-
-        ######################################################
+            if piecewise_metrics:
+                batch_metric = {
+                    f"{seg}_{metric}_{target}":
+                    # collect that metric across all items, then average
+                        np.mean([item[seg][metric] for item in piecewise_metrics])
+                    for seg in piecewise_metrics[0].keys()
+                    for metric in piecewise_metrics[0][seg].keys()
+                }
+                return batch_metric
+            else:
+                pass
         else:
-            # default behavior
-            def compute_item(pospt_pred, truth_orig_target):
-                # take the ground truth from the original version, so there are no quantization errors
-                piece_truth_time = np.frombuffer(truth_orig_target)
-                # run evaluation
-                metrics = self.metrics(piece_truth_time, pospt_pred, step=step)
-
-                return metrics
-
-            with ThreadPoolExecutor() as executor:
-                piecewise_metrics = list(
-                    executor.map(
-                        compute_item,
-                        postp_target,
-                        batch[f"truth_orig_{target}"],
-                    )
-                )
-
             # average the beat metrics across the dictionary
             batch_metric = {
                 key + f"_{target}": np.mean([x[key] for x in piecewise_metrics])
                 for key in piecewise_metrics[0].keys()
             }
-
             return batch_metric
 
     def log_losses(self, losses, batch_size, step="train"):
@@ -344,6 +323,7 @@ class PLBeatThis(LightningModule):
         metrics = self._compute_metrics(batch, postp_beat, postp_downbeat, step="test")
         return metrics, model_prediction, batch["dataset"], batch["spect_path"]
 
+
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW
         # only decay 2+-dimensional tensors, to exclude biases and norms
@@ -396,11 +376,11 @@ class Metrics:
         self.min_beat_time = eval_trim_beats
 
     def __call__(self, truth, preds, step) -> Any:
+
         truth = mir_eval.beat.trim_beats(truth, min_beat_time=self.min_beat_time)
         preds = mir_eval.beat.trim_beats(preds, min_beat_time=self.min_beat_time)
-        if (
-            step == "val"
-        ):  # limit the metrics that are computed during validation to speed up training
+
+        if step == "val": # limit the metrics that are computed during validation to speed up training
             fmeasure = mir_eval.beat.f_measure(truth, preds)
             cemgil = mir_eval.beat.cemgil(truth, preds)
             return {"F-measure": fmeasure, "Cemgil": cemgil}
