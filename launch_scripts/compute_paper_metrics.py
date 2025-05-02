@@ -8,6 +8,9 @@ from beat_this.dataset import BeatDataModule
 from beat_this.inference import load_checkpoint
 from beat_this.model.pl_module import PLBeatThis
 
+import wandb
+import re
+
 # for repeatability
 seed_everything(0, workers=True)
 
@@ -49,6 +52,35 @@ def main(args):
             for d, value in v.items():
                 print(f"{d}: {value}")
             print("------")
+
+        if args.update_wandb:
+            print(f'Attempting to update wandb metrics for run: {args.update_wandb}')
+            try:
+                # load run
+                api = wandb.Api()
+                run_path = 'bank_juhasz_msc_thesis/beat_this/' + args.update_wandb
+                run = api.run(run_path)
+
+                filtered_metrics = {
+                    k: v
+                    for k, v in averaged_metrics.items()
+                    if re.match(r'segment_\d+_F-measure_(beat|downbeat)$', k)
+                }
+
+                # adding datasplit for clarity
+                upload_package = {
+                    f"{args.datasplit}_{k}": v
+                    for k, v in filtered_metrics.items()
+                }
+
+                if not upload_package:
+                    print("No F-measure metrics found to upload.")
+                else:
+                    run.summary.update(upload_package)
+                    print(f"Uploaded F-measure metrics: {sorted(upload_package.keys())}")
+
+            except Exception as e:
+                print(f'wandb metrics update failed due to the following error: {e}')
 
     else:  # multiple models
         if args.aggregation_type == "mean-std":
@@ -270,6 +302,12 @@ if __name__ == "__main__":
         default=False,
         action=argparse.BooleanOptionalAction,
         help="If True, compute metrics separately for 3 10s segments within each 30s excerpt."
+    )
+    parser.add_argument(
+        "--update_wandb",
+        type=str,
+        default=None,
+        help="W&B run ID of the run which the evaluation metrics will be uploaded to."
     )
 
     args = parser.parse_args()
