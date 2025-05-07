@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 from torch.nn import Module, ModuleList
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 # helper functions
 
@@ -51,22 +52,20 @@ class CausalConvBlock(nn.Module):
         self.padding = (padding[0], self.crop)
 
         self.conv = nn.Conv2d(in_channels,
-                               out_channels,
-                               kernel_size,
-                               stride,
-                               groups=groups,
-                               padding=self.padding,
-                               bias=bias)
+                              out_channels,
+                              kernel_size,
+                              stride,
+                              groups=groups,
+                              padding=self.padding,
+                              bias=bias)
 
     def forward(self, input):
         """
-        Arguments:
-            input: (batch_size, in_channels, freq_bins, time_steps)
+        input: (batch_size, in_channels, freq_bins, time_steps)
 
         Returns:
-            x: (batch_size, out_channels, freq_bins, time_steps)
+        x: (batch_size, out_channels, freq_bins, time_steps)
         """
-
         # pytorch only includes symmetric padding --> we are removing any padding from the right hand side (future)
         x = self.conv(input)[:, :, :, :-self.crop]
         return x
@@ -105,20 +104,59 @@ class FeedForward(Module):
 
 
 class Attend(nn.Module):
-    def __init__(self, dropout=0.0, scale=None, causal_transformer=False):
+    def __init__(self, dropout=0.0, scale=None, causal_transformer=False, sw_attention_window_size=0):
         super().__init__()
         self.dropout = dropout
         self.scale = scale
         self.causal_transformer = causal_transformer
+        self.sw_attention_window_size = sw_attention_window_size
 
     def forward(self, q, k, v):
-        if exists(self.scale):
-            default_scale = q.shape[-1] ** -0.5
-            q = q * (self.scale / default_scale)
 
-        return F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal = self.causal_transformer # causal mask added
-        )
+        if self.sw_attention_window_size > 0:
+
+            # mask_mod: only allow j ∈ [i-W, i]
+            def local_mask(b, h, i, j):
+                '''
+                The FlexAttention mask‐building machinery expects a mask_mod (or score_mod) with this signature.
+                The mask_mod function provides the fused attention kernel with the information:
+                    - which query–key pairs are allowed
+                    - which should be masked out.
+                '''
+                # b, h, i, j are scalar tensors of indices
+                return (j >= i - self.sw_attention_window_size) & (j <= i)
+
+            batch_size, heads, query_length, _ = q.shape
+            # block-sparse mask --> compresses mask into "block-level metadata"
+            block_mask = create_block_mask(
+                local_mask,     # mask_fn
+                batch_size,     # batch size
+                heads,          # heads
+                query_length,   # query length
+                query_length,   # key/value length --> same as query length as we're doing self-attention
+                device=q.device,
+                BLOCK_SIZE=self.sw_attention_window_size  # window size as block size for maximum sparsity
+            )
+
+            # skip all-zero blocks and execute only the necessary local attention
+            return flex_attention(
+                q, k, v,
+                block_mask=block_mask,
+                scale=None
+            )
+
+        else:
+            if exists(self.scale):
+                default_scale = q.shape[-1] ** -0.5
+                q = q * (self.scale / default_scale)
+
+            return F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal = self.causal_transformer # causal mask
+            )
 
 
 class Attention(Module):
@@ -130,7 +168,8 @@ class Attention(Module):
         dropout=0.0,
         rotary_embed=None,
         gating=True,
-        causal_transformer=False
+        causal_transformer=False,
+        sw_attention_window_size=0
     ):
         super().__init__()
         self.heads = heads
@@ -139,7 +178,11 @@ class Attention(Module):
 
         self.rotary_embed = rotary_embed
 
-        self.attend = Attend(dropout=dropout, causal_transformer=causal_transformer)
+        self.attend = Attend(
+            dropout=dropout,
+            causal_transformer=causal_transformer,
+            sw_attention_window_size=sw_attention_window_size
+        )
 
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=False)
@@ -191,7 +234,8 @@ class Transformer(Module):
         norm_output=True,
         rotary_embed=None,
         gating=True,
-        causal_transformer=False
+        causal_transformer=False,
+        sw_attention_window_size=0
     ):
         super().__init__()
         self.layers = ModuleList([])
@@ -208,7 +252,8 @@ class Transformer(Module):
                             dropout=attn_dropout,
                             rotary_embed=rotary_embed,
                             gating=gating,
-                            causal_transformer=causal_transformer
+                            causal_transformer=causal_transformer,
+                            sw_attention_window_size=sw_attention_window_size,
                         ),
                         ff,
                     ]

@@ -48,6 +48,7 @@ class BeatThis(nn.Module):
         partial_transformers: bool = True,
         causal_transformer=False,
         causal_convolution=False,
+        sw_attention_window_size=0,
     ):
         super().__init__()
         # shared rotary embedding for frontend blocks and transformer blocks
@@ -70,7 +71,8 @@ class BeatThis(nn.Module):
                     rotary_embed,
                     dropout["frontend"],
                     causal_transformer,
-                    causal_convolution
+                    causal_convolution,
+                    sw_attention_window_size
                 )
             )
             dim *= 2
@@ -98,7 +100,8 @@ class BeatThis(nn.Module):
             ff_mult=ff_mult,
             dim_head=head_dim,
             norm_output=True,
-            causal_transformer=causal_transformer
+            causal_transformer=causal_transformer,
+            sw_attention_window_size=sw_attention_window_size,
         )
 
         # create the output heads
@@ -150,6 +153,7 @@ class BeatThis(nn.Module):
         dropout: float = 0.1,
         causal_transformer: bool = False,
         causal_convolution: bool = False,
+        sw_attention_window_size: int = 0,
     ) -> nn.Module:
         if partial_transformers and (head_dim is None or rotary_embed is None):
             raise ValueError(
@@ -181,7 +185,8 @@ class BeatThis(nn.Module):
                         n_head=in_dim // head_dim,
                         rotary_embed=rotary_embed,
                         dropout=dropout,
-                        causal_transformer=causal_transformer
+                        causal_transformer=causal_transformer,
+                        sw_attention_window_size=sw_attention_window_size
                     )
                     if partial_transformers
                     else nn.Identity()
@@ -291,7 +296,8 @@ class PartialFTTransformer(nn.Module):
         n_head: int,
         rotary_embed: RotaryEmbedding,
         dropout: float,
-        causal_transformer=False
+        causal_transformer=False,
+        sw_attention_window_size=0,
     ):
         super().__init__()
 
@@ -304,7 +310,8 @@ class PartialFTTransformer(nn.Module):
             dim_head=dim_head,
             dropout=dropout,
             rotary_embed=rotary_embed,
-            causal_transformer=False # always False --> causal would mean that it can't access the higher freqs while it is processing a freq bin
+            causal_transformer=False, # always False --> causal would mean that it can't access the higher freqs while it is processing a freq bin
+            sw_attention_window_size=0 # always 0 --> same reason
         )
         self.ffF = roformer.FeedForward(dim, dropout=dropout)
         # time directed partial transformer
@@ -314,7 +321,8 @@ class PartialFTTransformer(nn.Module):
             dim_head=dim_head,
             dropout=dropout,
             rotary_embed=rotary_embed,
-            causal_transformer=causal_transformer
+            causal_transformer=causal_transformer,
+            sw_attention_window_size=sw_attention_window_size
         )
         self.ffT = roformer.FeedForward(dim, dropout=dropout)
 

@@ -20,6 +20,7 @@ def main(args):
     params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}"
 
     if args.logger == "wandb":
+        # TO BE CHECKED
         if args.resume_checkpoint and args.resume_id:
             wandb_args = dict(id=args.resume_id, resume="must")
         else:
@@ -100,6 +101,7 @@ def main(args):
         partial_transformers=args.partial_transformers,
         causal_transformer=args.causal_transformer,
         causal_convolution=args.causal_convolution,
+        sw_attention_window_size=args.sw_attention_window_size,
     )
     for part in args.compile:
         if hasattr(pl_model.model, part):
@@ -128,16 +130,18 @@ def main(args):
         log_every_n_steps=1,
         precision="16-mixed",
         accumulate_grad_batches=args.accumulate_grad_batches,
-        check_val_every_n_epoch=args.val_frequency
+        check_val_every_n_epoch=args.val_frequency,
+        # debug args
+        #max_epochs=1,
+        #limit_train_batches=1,  # only one batch
+        #limit_val_batches=0,  # skip validation
     )
 
-     #########
-    # added in attempt to make resume-from-checkpoint work
+    # resume-from-checkpoint work
     if args.resume_checkpoint:
         trainer.fit(pl_model, datamodule, ckpt_path=args.resume_checkpoint)
     else:
         trainer.fit(pl_model, datamodule)
-    ########
 
     trainer.test(pl_model, datamodule)
 
@@ -229,19 +233,19 @@ if __name__ == "__main__":
         "--tempo-augmentation",
         default=True,
         action=argparse.BooleanOptionalAction,
-        help="Use precomputed tempo aumentation",
+        help="Use precomputed tempo augmentation",
     )
     parser.add_argument(
         "--pitch-augmentation",
         default=True,
         action=argparse.BooleanOptionalAction,
-        help="Use precomputed pitch aumentation",
+        help="Use precomputed pitch augmentation",
     )
     parser.add_argument(
         "--mask-augmentation",
         default=True,
         action=argparse.BooleanOptionalAction,
-        help="Use online mask aumentation",
+        help="Use online mask augmentation",
     )
     parser.add_argument(
         "--sum-head",
@@ -293,7 +297,7 @@ if __name__ == "__main__":
         help="Path to checkpoint to resume training."
     )
     parser.add_argument(
-        "--resume_id",
+        "--resume-id",
         type=str,
         default="",
         help="Optional wandb id to continue logging to."
@@ -309,6 +313,12 @@ if __name__ == "__main__":
         default=False,
         action=argparse.BooleanOptionalAction,
         help="Determines whether causal version of convolutions are used in the frontend."
+    )
+    parser.add_argument(
+        "--sw-attention-window-size",
+        type=int,
+        default=0,
+        help="Window size for the sliding window attention in frames. If 0, no sliding window attention is used."
     )
     ##################
 

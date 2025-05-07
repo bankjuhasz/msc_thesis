@@ -41,6 +41,7 @@ class PLBeatThis(LightningModule):
         partial_transformers=True,
         causal_transformer=False,
         causal_convolution=False,
+        sw_attention_window_size=0,
         segment_metrics=False,
     ):
         super().__init__()
@@ -61,6 +62,7 @@ class PLBeatThis(LightningModule):
             partial_transformers=partial_transformers,
             causal_transformer=causal_transformer,
             causal_convolution=causal_convolution,
+            sw_attention_window_size=sw_attention_window_size,
         )
         self.warmup_steps = warmup_steps
         self.max_epochs = max_epochs
@@ -137,7 +139,6 @@ class PLBeatThis(LightningModule):
     def _compute_metrics_target(self, batch, postp_target, target, step):
 
         def compute_item_segmented(pospt_pred, truth_orig_target):
-
             # take the ground truth from the original version, so there are no quantization errors
             piece_truth_time = np.frombuffer(truth_orig_target)
 
@@ -161,7 +162,6 @@ class PLBeatThis(LightningModule):
                 seg_metrics = self.metrics(truth_segment, preds_segment, step=step)
                 piece_metrics[f"segment_{seg}"] = seg_metrics
             return piece_metrics
-
 
         def compute_item(pospt_pred, truth_orig_target):
             # take the ground truth from the original version, so there are no quantization errors
