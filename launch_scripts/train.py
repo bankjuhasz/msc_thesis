@@ -17,7 +17,7 @@ def main(args):
     print("Starting a new run with the following parameters:")
     print(args)
 
-    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}"
+    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}{'sw' if args.sw_attention_window_size else ''}{args.sw_attention_window_size if args.sw_attention_window_size else ''}"
 
     if args.logger == "wandb":
         # TO BE CHECKED
