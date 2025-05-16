@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 from torch.nn import Module, ModuleList
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask, BlockMask
 
 # helper functions
 
@@ -110,33 +110,37 @@ class Attend(nn.Module):
         self.scale = scale
         self.causal_transformer = causal_transformer
         self.sw_attention_window_size = sw_attention_window_size
+        # caching the block mask for sw_attention for efficiency
+        self._block_mask_cache: dict[tuple, BlockMask] = {}
 
     def forward(self, q, k, v):
 
         if self.sw_attention_window_size > 0:
 
-            # mask_mod: only allow j ∈ [i-W, i]
-            def local_mask(b, h, i, j):
-                '''
-                The FlexAttention mask‐building machinery expects a mask_mod (or score_mod) with this signature.
-                The mask_mod function provides the fused attention kernel with the information:
-                    - which query–key pairs are allowed
-                    - which should be masked out.
-                '''
-                # b, h, i, j are scalar tensors of indices
-                return (j >= i - self.sw_attention_window_size) & (j <= i)
+            # building block mask cache key
+            b, h, q_len, _ = q.shape
+            cache_key = (b, h, q_len, q.device)
+            # check if the block mask is already cached
+            block_mask = self._block_mask_cache.get(cache_key)
 
-            batch_size, heads, query_length, _ = q.shape
-            # block-sparse mask --> compresses mask into "block-level metadata"
-            block_mask = create_block_mask(
-                local_mask,     # mask_fn
-                batch_size,     # batch size
-                heads,          # heads
-                query_length,   # query length
-                query_length,   # key/value length --> same as query length as we're doing self-attention
-                device=q.device,
-                BLOCK_SIZE=self.sw_attention_window_size  # window size as block size for maximum sparsity
-            )
+            # if not cached, create the block mask
+            if block_mask is None:
+                # mask_mod
+                def local_mask(b, h, i, j):
+                    return (j >= i - self.sw_attention_window_size) & (j <= i)
+
+                block_mask = create_block_mask(
+                    mask_mod=local_mask,
+                    B=None, # for efficiency --> see FlexAttention blogpost
+                    H=None, # for efficiency --> see FlexAttention blogpost
+                    Q_LEN=q_len,
+                    KV_LEN=q_len, # key/value length --> same as query length as we're doing self-attention
+                    device=q.device,
+                    BLOCK_SIZE=128, #self.sw_attention_window_size,
+                    _compile=True
+                )
+                # cache the block mask for future use
+                self._block_mask_cache[cache_key] = block_mask
 
             # skip all-zero blocks and execute only the necessary local attention
             return flex_attention(
