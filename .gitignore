@@ -9,3 +9,10 @@ wandb/
 .vscode/
 beat_this.egg-info/
 build/
+
+# JetBrains IDE configs
+.idea/
+
+# Debug files
+launch_scripts/debug_one_batch.py
+random_tests.py

@@ -26,7 +26,12 @@ def main(args):
         datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit)
         # create model and trainer
         model, trainer = plmodel_setup(
-            checkpoint, args.eval_trim_beats, args.dbn, args.gpu, segment_metrics=args.segment_metrics
+            checkpoint,
+            args.eval_trim_beats,
+            args.dbn,
+            args.gpu,
+            segment_metrics=args.segment_metrics,
+            full_piece_metrics=args.full_piece_metrics,
         )
         # predict
         metrics, dataset, preds, piece = compute_predictions(
@@ -185,7 +190,7 @@ def datamodule_setup(checkpoint, num_workers, datasplit):
     return datamodule
 
 
-def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False):
+def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False, full_piece_metrics=False):
     """
     Set up the pytorch lightning model and trainer for evaluation.
 
@@ -204,6 +209,7 @@ def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False):
     if dbn is not None:
         checkpoint["hyper_parameters"]["use_dbn"] = dbn
     checkpoint["hyper_parameters"]["segment_metrics"] = segment_metrics
+    checkpoint["hyper_parameters"]["full_piece_metrics"] = full_piece_metrics
 
     model = PLBeatThis(**checkpoint["hyper_parameters"])
     model.load_state_dict(checkpoint["state_dict"])
@@ -308,6 +314,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="W&B run ID of the run which the evaluation metrics will be uploaded to."
+    )
+    parser.add_argument(
+        "--full_piece_metrics",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="If True, compute metrics for the full piece instead of segments or stitched-together excerpts of size chunk_size."
     )
 
     args = parser.parse_args()

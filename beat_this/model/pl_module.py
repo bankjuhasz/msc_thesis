@@ -43,6 +43,7 @@ class PLBeatThis(LightningModule):
         causal_convolution=False,
         sw_attention_window_size=0,
         segment_metrics=False,
+        full_piece_metrics=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -308,13 +309,20 @@ class PLBeatThis(LightningModule):
             border_size = 2 * self.beat_loss.tolerance
         else:
             border_size = 0
-        model_prediction = split_predict_aggregate(
-            batch["spect"][0], chunk_size, border_size, overlap_mode, self.model
-        )
-        # add the batch dimension back in the prediction for consistency
-        model_prediction = {
-            key: value.unsqueeze(0) for key, value in model_prediction.items()
-        }
+
+        if self.hparams.full_piece_metrics:
+            # compute predictions for the full piece
+            model_prediction = self.model(batch["spect"])
+        else:
+            # compute predictions on stitched-together chunks of size chunk_size
+            model_prediction = split_predict_aggregate(
+                batch["spect"][0], chunk_size, border_size, overlap_mode, self.model
+            )
+            # add the batch dimension back in the prediction for consistency
+            model_prediction = {
+                key: value.unsqueeze(0) for key, value in model_prediction.items()
+            }
+
         # postprocess the predictions
         postp_beat, postp_downbeat = self.postprocessor(
             model_prediction["beat"], model_prediction["downbeat"], None
