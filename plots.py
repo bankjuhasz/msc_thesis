@@ -66,7 +66,7 @@ def plot_gradients_over_time(
     plt.xlabel("Time Steps")
     plt.ylabel("Gradient Magnitude")
     if custom_model_name:
-        plt.title(f"Input: input_tensor | Model: {custom_model_name} | Frame: {chosen_frame}")
+        plt.title(f"Input: input_tensor | Output: {target} | Model: {custom_model_name} | Frame: {chosen_frame}")
     else:
         plt.title("Summed Gradients Over Time (Abs. Value)")
     plt.legend()
@@ -75,9 +75,10 @@ def plot_gradients_over_time(
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    #checkpoint_path = "small0"
+    checkpoint_path = "small0"
+    #checkpoint_path = "checkpoints/S0 shift_tolerant_weighted_bce-h128-augTrueTrueTruect=0 cc=1.ckpt"
     #checkpoint_path = "checkpoints/S0 shift_tolerant_weighted_bce-h128-augTrueTrueTruect=1.ckpt"
-    checkpoint_path = "checkpoints/S0 shift_tolerant_weighted_bce-h128-augTrueTrueTruect=1 cc=1.ckpt"
+    #checkpoint_path = "checkpoints/S0 shift_tolerant_weighted_bce-h128-augTrueTrueTruect=1 cc=1.ckpt"
     #checkpoint_path = "checkpoints/S0 shift_tolerant_weighted_bce-h128-augTrueTrueTruect=1 cc=1-v1.ckpt"
 
     input_tensor = torch.randn(1, 1500, 128, requires_grad=True, device='cuda')
@@ -88,9 +89,10 @@ if __name__ == "__main__":
     #print("real_audio shape:", real_audio.shape)
     #print("real_audio type:", type(real_audio))
 
-    #custom_model_name = "small0"
-    #custom_model_name = "causal_trans + normal_conv"
-    custom_model_name = "causal_trans + causal_conv"
+    custom_model_name = "small0"
+    #custom_model_name = "full_attn + causal_conv"
+    #custom_model_name = "causal_attn + vanilla_conv"
+    #custom_model_name = "causal_attn + causal_conv"
     #custom_model_name = "sliding window attention"
 
     plot_gradients_over_time(checkpoint_path, input_tensor, chosen_frame, custom_model_name, target="model_output")
