@@ -32,6 +32,7 @@ def main(args):
             args.gpu,
             segment_metrics=args.segment_metrics,
             full_piece_metrics=args.full_piece_metrics,
+            streaming_inference=args.streaming_inference,
         )
         # predict
         metrics, dataset, preds, piece = compute_predictions(
@@ -190,15 +191,26 @@ def datamodule_setup(checkpoint, num_workers, datasplit):
     return datamodule
 
 
-def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False, full_piece_metrics=False):
+def plmodel_setup(
+        checkpoint,
+        eval_trim_beats,
+        dbn,
+        gpu,
+        segment_metrics=False,
+        full_piece_metrics=False,
+        streaming_inference=False,
+):
     """
     Set up the pytorch lightning model and trainer for evaluation.
 
     Args:
-        checkpoint_path (dict): The dict containing the checkpoint to load.
+        checkpoint (dict): The dict containing the checkpoint to load.
         eval_trim_beats (int or None): The number of beats to trim during evaluation. If None, the setting is taken from the pretrained model.
         dbn (bool or None): Whether to use the Dynamic Bayesian Network (DBN) module during evaluation. If None, the default behavior from the pretrained model is used.
         gpu (int): The index of the GPU device to use for training.
+        segment_metrics (bool): Whether to compute metrics in 10s segments per excerpt.
+        full_piece_metrics (bool): Whether to compute metrics for the full piece without stitching.
+        streaming_inference (bool): Whether to use streaming inference with a fixed buffer and chunk size.
 
     Returns:
         tuple: A tuple containing the initialized pytorch lightning model and trainer.
@@ -210,6 +222,7 @@ def plmodel_setup(checkpoint, eval_trim_beats, dbn, gpu, segment_metrics=False, 
         checkpoint["hyper_parameters"]["use_dbn"] = dbn
     checkpoint["hyper_parameters"]["segment_metrics"] = segment_metrics
     checkpoint["hyper_parameters"]["full_piece_metrics"] = full_piece_metrics
+    checkpoint["hyper_parameters"]["streaming_inference"] = streaming_inference
 
     model = PLBeatThis(**checkpoint["hyper_parameters"])
     model.load_state_dict(checkpoint["state_dict"])
@@ -320,6 +333,12 @@ if __name__ == "__main__":
         default=False,
         action=argparse.BooleanOptionalAction,
         help="If True, compute metrics for the full piece instead of segments or stitched-together excerpts of size chunk_size."
+    )
+    parser.add_argument(
+        "--streaming_inference",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Predictions in streaming mode with a fixed buffer and chunk size."
     )
 
     args = parser.parse_args()

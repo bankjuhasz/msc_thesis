@@ -40,6 +40,10 @@ class LogMelSpect(torch.nn.Module):
         device="cpu",
     ):
         super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.device = device
+        self.log_multiplier = log_multiplier
         self.spect_class = torchaudio.transforms.MelSpectrogram(
             sample_rate=sample_rate,
             n_fft=n_fft,
@@ -51,7 +55,6 @@ class LogMelSpect(torch.nn.Module):
             normalized=normalized,
             power=power,
         ).to(device)
-        self.log_multiplier = log_multiplier
 
     def forward(self, x):
         """Input is a waveform as a monodimensional array of shape T,

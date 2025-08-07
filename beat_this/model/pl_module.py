@@ -41,9 +41,11 @@ class PLBeatThis(LightningModule):
         partial_transformers=True,
         causal_transformer=False,
         causal_convolution=False,
-        sw_attention_window_size=0,
+        sw_attention_window_size=256,
         segment_metrics=False,
         full_piece_metrics=False,
+        streaming_inference= False,
+        peek_size: int = 256 # lookahead size for streaming inference
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -302,18 +304,31 @@ class PLBeatThis(LightningModule):
             raise ValueError(
                 "When predicting full pieces, the Dataset must not pad inputs"
             )
-        # compute border size according to the loss type
-        if hasattr(
-            self.beat_loss, "tolerance"
-        ):  # discard the edges that are affected by the max-pooling in the loss
-            border_size = 2 * self.beat_loss.tolerance
-        else:
-            border_size = 0
 
         if self.hparams.full_piece_metrics:
-            # compute predictions for the full piece
-            model_prediction = self.model(batch["spect"])
+            if self.hparams.streaming_inference:
+                device = batch["spect"].device
+                # compute predictions on the full piece with streaming inference
+                model_prediction = streaming_predict(
+                    model=self.model,
+                    spect=batch["spect"],
+                    #window_size=self.hparams.sw_attention_window_size,
+                    window_size=1024,
+                    peek_size=self.hparams.peek_size,
+                    device=device
+                )
+            else:
+                # compute predictions for the full piece without streaming
+                model_prediction = self.model(batch["spect"])
         else:
+            # compute border size according to the loss type
+            if hasattr(
+                    self.beat_loss, "tolerance"
+            ):  # discard the edges that are affected by the max-pooling in the loss
+                border_size = 2 * self.beat_loss.tolerance
+            else:
+                border_size = 0
+
             # compute predictions on stitched-together chunks of size chunk_size
             model_prediction = split_predict_aggregate(
                 batch["spect"][0], chunk_size, border_size, overlap_mode, self.model
@@ -375,7 +390,7 @@ class PLBeatThis(LightningModule):
         _orig_mod prefixes. By NOT removing them (hence commenting it out), we can use the checkpoints with compiled
         models. However, this means that for uncompiled applications, the prefix has to be removed manually.
         '''
-        #state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
+        state_dict = replace_state_dict_key(state_dict, "_orig_mod.", "")
         return state_dict
 
 
