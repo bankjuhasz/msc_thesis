@@ -1,3 +1,38 @@
+# Beat This! Live
+
+This is an ongoing project to develop a live version of the original state of the art beat and downbeat tracker Beat
+This! from the ISMIR 2024 paper "[Beat This! Accurate Beat Tracking Without DBN Postprocessing](https://arxiv.org/abs/2407.21658)"
+by Francesco Foscarin, Jan Schlüter and Gerhard Widmer.
+
+The original repository is available [here](https://github.com/CPJKU/beat_this/tree/main).
+
+## Live version
+
+The plan is to turn the model into a causal one, which involves the convolutional layers, the time-directed partial
+transformers and the transformer blocks. This will facilitate real-time predictions, as the model will not rely on future
+information. Once we have a solid implementation, we turn to actual streaming predictions.
+
+We have to deal with latency, as there is only a limited window to deliver predictions before the next audio chunk arrives.
+There are several avenues to explore here, such as sliding-window attention, caching spectrograms, feature maps and 
+attention patterns, or shifting the labels to "predict the future", thus allowing the model more time to predict.
+
+Here is a list of the current tasks:
+- [x] Implement causal convolutions
+- [x] Implement causal partial transformers
+- [x] Implement causal transformer blocks
+- [x] Analyze the impact of causality on model performance
+- [x] Implement a sliding window attention using flexattention
+- [ ] Cached convolutions
+- [ ] Cached attention
+- [ ] Train with shifted labels and analyze the impact on model performance
+- [ ] Implement a streaming prediction pipeline (IN PROGRESS)
+
+As the project progresses, this ReadMe will be updated to reflect the current state of the live version. You can read
+the original ReadMe of the Beat This! project below.
+
+
+---
+
 # Beat This!
 Official implementation of the beat tracker from the ISMIR 2024 paper "[Beat This! Accurate Beat Tracking Without DBN Postprocessing](https://arxiv.org/abs/2407.21658)" by Francesco Foscarin, Jan Schlüter and Gerhard Widmer.
 
