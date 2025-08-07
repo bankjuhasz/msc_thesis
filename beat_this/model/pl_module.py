@@ -12,7 +12,7 @@ import torch
 from pytorch_lightning import LightningModule
 
 import beat_this.model.loss
-from beat_this.inference import split_predict_aggregate
+from beat_this.inference import split_predict_aggregate, streaming_predict
 from beat_this.model.beat_tracker import BeatThis
 from beat_this.model.postprocessor import Postprocessor
 from beat_this.utils import replace_state_dict_key
@@ -30,7 +30,7 @@ class PLBeatThis(LightningModule):
         dropout={"frontend": 0.1, "transformer": 0.2},
         lr=0.0008,
         weight_decay=0.01,
-        pos_weights={"beat": 1, "downbeat": 1},
+         pos_weights={"beat": 1, "downbeat": 1},
         head_dim=32,
         loss_type="shift_tolerant_weighted_bce",
         warmup_steps=1000,

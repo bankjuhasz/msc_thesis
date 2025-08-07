@@ -1,9 +1,11 @@
 import inspect
 
 import numpy as np
-import soxr
+#import soxr
 import torch
 import torch.nn.functional as F
+from collections import deque
+from typing import Tuple
 
 from beat_this.model.beat_tracker import BeatThis
 from beat_this.model.postprocessor import Postprocessor
@@ -229,6 +231,96 @@ def split_predict_aggregate(
     )
     # save it to model_prediction
     return {"beat": piece_prediction_beat, "downbeat": piece_prediction_downbeat}
+
+
+def streaming_predict(
+    model: torch.nn.Module,
+    spect: torch.Tensor,
+    window_size: int,
+    peek_size: int,
+    device: torch.device = None,
+    tolerance: int = 3,
+) -> dict:
+    """
+    Run a full-song spectrogram through model in streaming, fixed-memory mode. The GPU memory should ideally hold only
+    the following (all of which are fixed):
+    - the model weights
+    - the spectrogram buffer of size (window_size, F)
+    - chunks of size (peek_size, F) that are passed to the model
+
+    Args:
+        model:       the model to run
+        spect:       tensor of shape (1, T, F)
+        window_size: number of frames the model sees at once
+        peek_size:   look-ahead size (nr of new frames to add to the buffer)
+        device:      device to run the model on
+        tolerance:   tolerance for ShiftTolerantBCELoss which the model was trained with
+
+    Returns:
+        dict:       dictionary containing 'beat' and 'downbeat' predictions
+    """
+    model.eval()
+    if device is None:
+        device = next(model.parameters()).device
+
+    # move data to device, build a ring buffer for the last window_size frames
+    spect = spect.to(device)
+    B, T, F = spect.shape
+
+    # we “reserve” pad_size frames at the end of each chunk that are never used to counteract the effect of using
+    # ShiftTolerantBCELoss during training
+    real_window = window_size - tolerance
+
+    # live buffer holds only the most recent real_window frames
+    zero_frame = torch.zeros(F, device=device)
+    buffer = deque([zero_frame] * real_window, maxlen=real_window)
+
+    # constant silence pad at the end
+    if tolerance > 0:
+        pad_frames = torch.stack([zero_frame] * tolerance, dim=0)  # (pad_size, F)
+    else:
+        pad_frames = torch.empty((0, F), device=device)
+
+    # cpu output buffers
+    beat_cpu = torch.empty(T, dtype=torch.float32, device="cpu")
+    downbeat_cpu = torch.empty(T, dtype=torch.float32, device="cpu")
+
+    frame_idx = 0
+    while frame_idx < T:
+        end = min(T, frame_idx + peek_size)
+
+        # slide in the next peek_size frames
+        for t in range(frame_idx, end):
+            buffer.append(spect[0, t]) # append vector of size F
+
+        real_part = torch.stack(list(buffer), dim=0)  # (real_window, F)
+        # adding the pad frames to the end of the buffer
+        chunk = torch.cat([real_part, pad_frames], dim=0)  # (window_size, F)
+        chunk = chunk.unsqueeze(0)  # (1, window_size, F)
+
+        # forward pass
+        with torch.no_grad():
+            preds = model(chunk)
+
+        # both preds are of shape (window_size,) after squeeze
+        beat_chunk = preds["beat"].squeeze(0)
+        downbeat_chunk = preds["downbeat"].squeeze(0)
+
+        # copy only the newest peek_size preds to cpu buffer
+        new_n = end - frame_idx # nr of new frames
+        start = real_window - new_n
+        end_idx = real_window
+        beat_slice = beat_chunk[start:end_idx]
+        downbeat_slice = downbeat_chunk[start:end_idx]
+
+        # move to cpu buffers
+        beat_cpu[frame_idx:end].copy_(beat_slice.cpu())
+        downbeat_cpu[frame_idx:end].copy_(downbeat_slice.cpu())
+
+        frame_idx = end
+
+    return {"beat": beat_cpu, "downbeat": downbeat_cpu}
+
 
 
 class Spect2Frames:
