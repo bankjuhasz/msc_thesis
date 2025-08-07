@@ -9,6 +9,7 @@ wandb/
 .vscode/
 beat_this.egg-info/
 build/
+PR_Report/
 
 # JetBrains IDE configs
 .idea/
