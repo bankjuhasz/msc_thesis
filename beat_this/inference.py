@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from collections import deque
+import time
 from typing import Tuple
 
 from beat_this.model.beat_tracker import BeatThis
@@ -241,6 +242,7 @@ def streaming_predict(
     peek_size: int,
     device: torch.device = None,
     tolerance: int = 3,
+    report: bool = False,
     hop_ms: int = 20,
     pace: bool = False,
     on_step = None,
@@ -260,6 +262,10 @@ def streaming_predict(
         peek_size:   look-ahead size (nr of new frames to add to the buffer)
         device:      device to run the model on
         tolerance:   tolerance for ShiftTolerantBCELoss which the model was trained with
+        report:      whether to report the latency metrics
+        hop_ms:      hop size in milliseconds for the spectrogram
+        pace:        whether to emulate real-time pacing of the model
+        on_step:     function to call on each step, e.g., for logging
 
     Returns:
         dict:       dictionary containing 'beat' and 'downbeat' predictions
@@ -271,14 +277,16 @@ def streaming_predict(
     # move data to device, build a ring buffer for the last window_size frames
     spect = spect.to(device)
     B, T, F = spect.shape
+    print(f"Spectrogram frames: {T}")
 
     # we “reserve” pad_size frames at the end of each chunk that are never used to counteract the effect of using
     # ShiftTolerantBCELoss during training
     real_window = window_size - tolerance
+    ring = torch.empty((real_window, F), device=device)
+    head = 0  # next write position
 
     # live buffer holds only the most recent real_window frames
     zero_frame = torch.zeros(F, device=device)
-    buffer = deque([zero_frame] * real_window, maxlen=real_window)
 
     # constant silence pad at the end
     if tolerance > 0:
@@ -286,25 +294,52 @@ def streaming_predict(
     else:
         pad_frames = torch.empty((0, F), device=device)
 
-    # cpu output buffers
-    beat_cpu = torch.empty(T, dtype=torch.float32, device="cpu")
-    downbeat_cpu = torch.empty(T, dtype=torch.float32, device="cpu")
+    # output buffers
+    beat_dev = torch.empty(T, device=device, dtype=torch.float32)
+    downbeat_dev = torch.empty(T, device=device, dtype=torch.float32)
 
+    chunk = torch.empty((1, window_size, F), device=device)
+    if tolerance:
+        chunk[0, real_window:].zero_()
+
+    t0 = time.monotonic()
+    k = 0 # counter for the nr of processed chunks
     frame_idx = 0
+    hop_s = hop_ms / 1000.0  # convert ms to s
+    frames_done = 0
     while frame_idx < T:
+        # measure gpu and wall time
+        if device == "cuda":
+            start_evt = torch.cuda.Event(enable_timing=True);
+            end_evt = torch.cuda.Event(enable_timing=True)
+            start_evt.record()
+        wall_start = time.monotonic()
+
+        # start and end indices for the current chunk
         end = min(T, frame_idx + peek_size)
+        new_n = end - frame_idx  # nr of new frames
+        start = real_window - new_n
+        end_idx = real_window
 
         # slide in the next peek_size frames
-        for t in range(frame_idx, end):
-            buffer.append(spect[0, t]) # append vector of size F
+        src = spect[0, frame_idx:end, :]  # (new_n, F)
+        first = min(new_n, real_window - head)  # how many fit before end of ring
+        ring[head:head + first].copy_(src[:first])
+        if first < new_n: # wrap around to the start
+            ring[0:new_n - first].copy_(src[first:])
+        head = (head + new_n) % real_window
 
-        real_part = torch.stack(list(buffer), dim=0)  # (real_window, F)
-        # adding the pad frames to the end of the buffer
-        chunk = torch.cat([real_part, pad_frames], dim=0)  # (window_size, F)
-        chunk = chunk.unsqueeze(0)  # (1, window_size, F)
+        # read the ring in time order into chunk[:real_window] (two-slice read)
+        # oldest -> newest is from 'head' to end, then 0 to head-1
+        r1 = ring[head:]  # (real_window - head, F)
+        r2 = ring[:head]  # (head, F)
+        n1 = r1.shape[0]
+        chunk[0, :n1].copy_(r1)
+        if head:
+            chunk[0, n1:real_window].copy_(r2)
 
         # forward pass
-        with torch.no_grad():
+        with torch.inference_mode():
             preds = model(chunk)
 
         # both preds are of shape (window_size,) after squeeze
@@ -312,19 +347,37 @@ def streaming_predict(
         downbeat_chunk = preds["downbeat"].squeeze(0)
 
         # copy only the newest peek_size preds to cpu buffer
-        new_n = end - frame_idx # nr of new frames
-        start = real_window - new_n
-        end_idx = real_window
         beat_slice = beat_chunk[start:end_idx]
         downbeat_slice = downbeat_chunk[start:end_idx]
 
         # move to cpu buffers
-        beat_cpu[frame_idx:end].copy_(beat_slice.cpu())
-        downbeat_cpu[frame_idx:end].copy_(downbeat_slice.cpu())
+        beat_dev[frame_idx:end] = beat_slice
+        downbeat_dev[frame_idx:end] = downbeat_slice
+
+        if device == "cuda":
+            end_evt.record()
+            end_evt.synchronize()
+            gpu_ms = start_evt.elapsed_time(end_evt)
+        wall_ms = (time.monotonic() - wall_start) * 1000.0
+
+        late_ms = 0.0
+        if pace:
+            frames_done += new_n
+            deadline = t0 + frames_done * hop_s
+            now = time.monotonic()
+            if now < deadline:
+                time.sleep(deadline - now)
+            else:
+                late_ms = (now - deadline) * 1000.0 # predictions were too late
+
+        if report:
+            if on_step is not None:
+                on_step(step=k, new_frames=end - frame_idx, gpu_ms=gpu_ms if device == "cuda" else None, wall_ms=wall_ms, late_ms=late_ms)
 
         frame_idx = end
+        k += 1
 
-    return {"beat": beat_cpu, "downbeat": downbeat_cpu}
+    return {"beat": beat_dev.cpu(), "downbeat": downbeat_dev.cpu()}
 
 
 
