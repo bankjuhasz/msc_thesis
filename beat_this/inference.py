@@ -240,6 +240,9 @@ def streaming_predict(
     peek_size: int,
     device: torch.device = None,
     tolerance: int = 3,
+    hop_ms: int = 20,
+    pace: bool = False,
+    on_step = None,
 ) -> dict:
     """
     Run a full-song spectrogram through model in streaming, fixed-memory mode. The GPU memory should ideally hold only
@@ -247,6 +250,7 @@ def streaming_predict(
     - the model weights
     - the spectrogram buffer of size (window_size, F)
     - chunks of size (peek_size, F) that are passed to the model
+    Also comes with the option of emulating real streaming and reporting back latency-related metrics.
 
     Args:
         model:       the model to run
