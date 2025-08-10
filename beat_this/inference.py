@@ -57,7 +57,7 @@ def load_checkpoint(checkpoint_path: str, device: str | torch.device = "cpu") ->
 
 
 def load_model(
-    checkpoint_path: str | None = "final0", device: str | torch.device = "cpu"
+    checkpoint_path: str | None = "final0", device: str | torch.device = "cpu", return_hparams: bool = False
 ) -> BeatThis:
     """
     Load a BeatThis model from a checkpoint.
@@ -87,7 +87,8 @@ def load_model(
         model.load_state_dict(state_dict)
     else:
         model = BeatThis()
-    return model.to(device).eval()
+    model = model.to(device).eval()
+    return (model, checkpoint.get("hyper_parameters", {})) if (return_hparams and checkpoint_path is not None) else model
 
 
 def zeropad(spect: torch.Tensor, left: int = 0, right: int = 0):
