@@ -2,10 +2,40 @@ import argparse
 from pathlib import Path
 import math
 from tqdm.auto import tqdm
+import numpy as np
+import matplotlib.pyplot as plt
 from torch.profiler import profile, ProfilerActivity
 
 from beat_this.dataset.dataset import BeatDataModule
 from beat_this.inference import streaming_predict, load_model
+
+def plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=0):
+    """Line plot: per-step budget vs actual wall time; shaded lateness where actual > budget."""
+    if not step_times:
+        print("No step timings to plot.")
+        return
+    steps = step_times[warmup:] if warmup else step_times
+
+    budgets = [st["new_frames"] * hop_ms for st in steps] # in ms
+    walls = [st["wall_ms"] for st in steps] # in ms
+    x = np.arange(1, len(steps) + 1)
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(x, budgets, label=f"Budget per step ({hop_ms:.1f} ms/frame)")
+    plt.plot(x, walls, label="Actual step time")
+
+    # shade lateness
+    over = np.array(walls) > np.array(budgets)
+    if over.any():
+        plt.fill_between(x, budgets, walls, where=over, alpha=0.3, interpolate=True, label="Lateness")
+
+    plt.xlabel("Step")
+    plt.ylabel("Milliseconds")
+    plt.title("Streaming latency vs. per-step budget")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved latency plot to {out_path}")
 
 def percentile_nearest_rank(sorted_vals, p):
     if not sorted_vals: return float("nan")
@@ -92,7 +122,7 @@ def main(args):
     def on_step(**kwargs):
         step_times.append(kwargs)
 
-    limit = 5
+    limit = 20
     run = 0
 
     #with profile(
@@ -133,7 +163,7 @@ def main(args):
             f"late frac={s['late_frac'] * 100:.2f}% p95={s['late_ms_p95']:.2f}ms max={s['late_ms_max']:.2f}ms  "
             f"util p50={s['util_p50'] * 100:.1f}%  burst(max_streak)={s['late_max_streak']}"
         )
-
+        plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=0)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
