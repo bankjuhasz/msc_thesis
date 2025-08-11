@@ -23,9 +23,10 @@ Here is a list of the current tasks:
 - [x] Analyze the impact of causality on model performance
 - [x] Implement a sliding window attention using flexattention
 - [ ] Cached convolutions
-- [ ] Cached attention
+- [ ] Cached attention (KV caching) (IN PROGRESS)
 - [ ] Train with shifted labels and analyze the impact on model performance
-- [ ] Implement a streaming prediction pipeline (IN PROGRESS)
+- [x] Implement a streaming prediction pipeline
+- [ ] Compare performance of vanilla streaming, cached convs and KV caching (IN PROGRESS)
 
 As the project progresses, this ReadMe will be updated to reflect the current state of the live version. You can read
 the original ReadMe of the Beat This! project below.
