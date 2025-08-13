@@ -22,7 +22,7 @@ Here is a list of the current tasks:
 - [x] Implement causal transformer blocks
 - [x] Analyze the impact of causality on model performance
 - [x] Implement a sliding window attention using flexattention
-- [ ] Cached convolutions
+- [x] Cached convolutions
 - [ ] Cached attention (KV caching) (IN PROGRESS)
 - [ ] Train with shifted labels and analyze the impact on model performance
 - [x] Implement a streaming prediction pipeline
