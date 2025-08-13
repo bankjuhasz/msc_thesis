@@ -4,13 +4,36 @@ import math
 from tqdm.auto import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+import csv
 from torch.profiler import profile, ProfilerActivity
 
 from beat_this.dataset.dataset import BeatDataModule
 from beat_this.inference import streaming_predict, load_model
 
+def export_step_times_csv(path, step_times):
+    # keep only real step rows; drop "mark" rows
+    rows = [r for r in step_times if "mark" not in r]
+    if not rows:
+        print("No step timings to export.")
+        return
+    # normalize keys and handle missing gpu_ms
+    for r in rows:
+        r.setdefault("gpu_ms", "") # empty if cpu
+        r.setdefault("late_ms", 0.0)
+        r.setdefault("late_flag", 0)
+        r.setdefault("budget_ms", 0.0)
+        r.setdefault("track_idx", 0)
+        r.setdefault("step_abs", 0)
+    fieldnames = ["step_abs","track_idx","new_frames","wall_ms","gpu_ms","budget_ms","late_ms","late_flag"]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in fieldnames})
+    print(f"Wrote {len(rows)} step rows to {path}")
+
 def plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=0):
-    """Line plot: per-step budget vs actual wall time; shaded lateness where actual > budget."""
+    """Line plot: per-step budget vs actual wall time. shaded lateness where actual > budget."""
     if not step_times:
         print("No step timings to plot.")
         return
@@ -31,6 +54,7 @@ def plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=0):
 
     plt.xlabel("Step")
     plt.ylabel("Milliseconds")
+    plt.ylim([-1, 100])
     plt.title("Streaming latency vs. per-step budget")
     plt.legend(loc="best")
     plt.tight_layout()
@@ -119,11 +143,17 @@ def main(args):
     pred_loader = dm.predict_dataloader()
 
     step_times = []
-    def on_step(**kwargs):
-        step_times.append(kwargs)
-
-    limit = 20
-    run = 0
+    track_idx = 0
+    def on_step(**kw):
+        budget_ms = kw["new_frames"] * hop_ms
+        late_flag = 1 if kw["late_ms"] > 0.05 else 0  # 0.05 ms tolerance
+        kw.update({
+            "budget_ms": budget_ms,
+            "late_flag": late_flag,
+            "track_idx": track_idx,
+            "step_abs": len(step_times),  # global step index across all tracks
+        })
+        step_times.append(kw)
 
     #with profile(
     #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -131,8 +161,9 @@ def main(args):
     #    profile_memory=True,  # track allocs
     #    with_stack=False  # True = Python call stacks (slower)
     #) as prof:
-
+    limit = 20
     for batch in tqdm(pred_loader, total=len(pred_loader), desc="Streaming (val)", unit="track"):
+        track_id = f"track_{track_idx}"
         spect = batch["spect"]  # (1, T, F)
         out = streaming_predict(
             model,
@@ -146,8 +177,8 @@ def main(args):
             pace=args.pace,
             on_step=on_step,
         )
-        run += 1
-        if limit and run >= limit:
+        track_idx += 1
+        if limit and track_idx >= limit:
             break
 
     '''print(prof.key_averages().table(
@@ -163,7 +194,9 @@ def main(args):
             f"late frac={s['late_frac'] * 100:.2f}% p95={s['late_ms_p95']:.2f}ms max={s['late_ms_max']:.2f}ms  "
             f"util p50={s['util_p50'] * 100:.1f}%  burst(max_streak)={s['late_max_streak']}"
         )
-        plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=0)
+        plot_latency(step_times, hop_ms, out_path="latency_plot.png", warmup=30)
+        if args.export_csv:
+            export_step_times_csv(args.export_csv, step_times)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -218,6 +251,12 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Whether to report latency statistics (default: False)."
+    )
+    parser.add_argument(
+        "--export-csv",
+        type=str,
+        default=None,
+        help="If set, write per step timings to csv."
     )
 
     args = parser.parse_args()
