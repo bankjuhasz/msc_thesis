@@ -270,6 +270,12 @@ def streaming_predict(
     Returns:
         dict:       dictionary containing 'beat' and 'downbeat' predictions
     """
+
+    # setting layers to streaming mode if available (convs, attention)
+    for m in model.modules():
+        if hasattr(m, "streaming"):
+            m.streaming = True
+
     model.eval()
     if device is None:
         device = next(model.parameters()).device
@@ -309,11 +315,11 @@ def streaming_predict(
     frames_done = 0
     while frame_idx < T:
         # measure gpu and wall time
+        wall_start = time.monotonic()
         if device == "cuda":
             start_evt = torch.cuda.Event(enable_timing=True);
             end_evt = torch.cuda.Event(enable_timing=True)
             start_evt.record()
-        wall_start = time.monotonic()
 
         # start and end indices for the current chunk
         end = min(T, frame_idx + peek_size)
@@ -330,7 +336,7 @@ def streaming_predict(
         head = (head + new_n) % real_window
 
         # read the ring in time order into chunk[:real_window] (two-slice read)
-        # oldest -> newest is from 'head' to end, then 0 to head-1
+        # oldest -> newest is from head to end, then 0 to head-1
         r1 = ring[head:]  # (real_window - head, F)
         r2 = ring[:head]  # (head, F)
         n1 = r1.shape[0]
@@ -368,7 +374,7 @@ def streaming_predict(
             if now < deadline:
                 time.sleep(deadline - now)
             else:
-                late_ms = (now - deadline) * 1000.0 # predictions were too late
+                late_ms = (now - deadline) * 1000.0 # prediction lateness in ms
 
         if report:
             if on_step is not None:

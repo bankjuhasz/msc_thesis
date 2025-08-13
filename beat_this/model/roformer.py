@@ -48,7 +48,8 @@ class CausalConvBlock(nn.Module):
                  bias=False):
         super().__init__()
 
-        self.crop = kernel_size[1] - 1
+        self.kernel_time = kernel_size[1]
+        self.crop = self.kernel_time - 1
         self.padding = (padding[0], self.crop)
 
         self.conv = nn.Conv2d(in_channels,
@@ -59,16 +60,49 @@ class CausalConvBlock(nn.Module):
                               padding=self.padding,
                               bias=bias)
 
+        # cache used for streaming inference (F, T)
+        self.register_buffer("time_cache", None)
+        self.initialized = False
+
     def forward(self, input):
         """
-        input: (batch_size, in_channels, freq_bins, time_steps)
-
-        Returns:
-        x: (batch_size, out_channels, freq_bins, time_steps)
+        Default forward method used during training and inference in non-streaming mode.
+        (batch_size, in_channels, freq_bins, time_steps) --> x: (batch_size, out_channels, freq_bins, time_steps)
         """
-        # pytorch only includes symmetric padding --> we are removing any padding from the right hand side (future)
-        x = self.conv(input)[:, :, :, :-self.crop]
-        return x
+        if getattr(self, "streaming", False) is True:
+            # if streaming mode is enabled, use the streaming forward method
+            return self.forward_streaming(input)
+        else:
+            # pytorch only includes symmetric padding --> we are removing any padding from the right hand side (future)
+            x = self.conv(input)[:, :, :, :-self.crop]
+            return x
+
+    def streaming_forward(self, x_new):
+        """
+        Streaming forward method used during inference in streaming mode. Keeps last k-1 frames in cache, appends new input, calculates convs.
+        (batch_size, in_channels, freq_bins, new_time_steps) --> x: (batch_size, out_channels, freq_bins, new_time_steps)
+        """
+        B, C, F, T_new = x_new.shape
+
+        if not self.initialized:
+            # init cache with zeros for warmup
+            self.time_cache = torch.zeros((B, C, F, self.kernel_time-1), device=x_new.device,dtype=x_new.dtype)
+            self.initialized = True
+
+        # concatenate old cache + new input along time dim, then apply conv without time padding
+        x_cat = torch.cat([self.time_cache, x_new], dim=-1)
+        y_full = self.conv(x_cat)
+
+        # remove the "future leak" frames
+        y_valid = y_full[:, :, :, :-self.crop]
+
+        # keep only the outputs that correspond to the new input frames
+        out_new = y_valid[:, :, :, -(T_new):]
+
+        # update cache (keep last k-1 time steps from x_cat)
+        self.time_cache = x_cat[:, :, :, - (self.kernel_time - 1):].detach()
+
+        return out_new
 
 
 # feedforward
