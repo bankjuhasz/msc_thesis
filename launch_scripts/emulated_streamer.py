@@ -161,8 +161,8 @@ def main(args):
     #    profile_memory=True,  # track allocs
     #    with_stack=False  # True = Python call stacks (slower)
     #) as prof:
-    limit = 20
-    for batch in tqdm(pred_loader, total=len(pred_loader), desc="Streaming (val)", unit="track"):
+    limit = 5
+    for batch in tqdm(pred_loader, total=limit, desc="Streaming (val)", unit="track"):
         track_id = f"track_{track_idx}"
         spect = batch["spect"]  # (1, T, F)
         out = streaming_predict(

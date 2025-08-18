@@ -153,7 +153,8 @@ class Attend(nn.Module):
 
             # building block mask cache key
             b, h, q_len, _ = q.shape
-            cache_key = (b, h, q_len, q.device)
+            kv_len = k.shape[2]
+            cache_key = (b, h, q_len, kv_len, q.device)
             # check if the block mask is already cached
             block_mask = self._block_mask_cache.get(cache_key)
 
@@ -168,7 +169,7 @@ class Attend(nn.Module):
                     B=None, # for efficiency --> see FlexAttention blogpost
                     H=None, # for efficiency --> see FlexAttention blogpost
                     Q_LEN=q_len,
-                    KV_LEN=q_len, # key/value length --> same as query length as we're doing self-attention
+                    KV_LEN=kv_len, # key/value length --> same as query length as we're doing self-attention
                     device=q.device,
                     BLOCK_SIZE=128, #self.sw_attention_window_size,
                     _compile=True
@@ -215,11 +216,12 @@ class Attention(Module):
         dim_inner = heads * dim_head
 
         self.rotary_embed = rotary_embed
+        self.sw_attention_window_size = sw_attention_window_size
 
         self.attend = Attend(
             dropout=dropout,
             causal_transformer=causal_transformer,
-            sw_attention_window_size=sw_attention_window_size
+            sw_attention_window_size=self.sw_attention_window_size
         )
 
         self.norm = RMSNorm(dim)
@@ -234,6 +236,11 @@ class Attention(Module):
             nn.Linear(dim_inner, dim, bias=False), nn.Dropout(dropout)
         )
 
+        # kv caching for streaming inference
+        self.k_cache = None
+        self.v_cache = None
+        self.cache_idx = 0  # position in ring buffer
+
     def forward(self, x):
         x = self.norm(x)
 
@@ -242,10 +249,25 @@ class Attention(Module):
         )
 
         if exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q)
-            k = self.rotary_embed.rotate_queries_or_keys(k)
+            if self.k_cache is not None:
+                q, k = self.rotary_embed.rotate_queries_with_cached_keys(q, k)
+            else:
+                q = self.rotary_embed.rotate_queries_or_keys(q)
+                k = self.rotary_embed.rotate_queries_or_keys(k)
 
-        out = self.attend(q, k, v)
+        # update caches
+        if self.k_cache is None:
+            self.k_cache, self.v_cache = k, v
+        else:
+            self.k_cache = torch.cat([self.k_cache, k], dim=2)
+            self.v_cache = torch.cat([self.v_cache, v], dim=2)
+
+            if (self.sw_attention_window_size > 0) and (self.k_cache.shape[2] > self.sw_attention_window_size):
+                self.k_cache = self.k_cache[:, :, -self.sw_attention_window_size:, :]
+                self.v_cache = self.v_cache[:, :, -self.sw_attention_window_size:, :]
+
+        # use cached K, V always
+        out = self.attend(q, self.k_cache, self.v_cache)
 
         if exists(self.to_gates):
             gates = self.to_gates(x)
@@ -253,6 +275,12 @@ class Attention(Module):
 
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
+
+    def reset_kv_cache(self):
+        """ Reset the key and value caches for streaming inference. """
+        self.k_cache = None
+        self.v_cache = None
+        self.cache_idx = 0
 
 
 # Roformer

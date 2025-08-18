@@ -283,7 +283,7 @@ def streaming_predict(
     # move data to device, build a ring buffer for the last window_size frames
     spect = spect.to(device)
     B, T, F = spect.shape
-    print(f"Spectrogram frames: {T}")
+    #print(f"Spectrogram frames: {T}")
 
     # we “reserve” pad_size frames at the end of each chunk that are never used to counteract the effect of using
     # ShiftTolerantBCELoss during training
@@ -314,6 +314,8 @@ def streaming_predict(
     hop_s = hop_ms / 1000.0  # convert ms to s
     frames_done = 0
     while frame_idx < T:
+        print(f"Processing frame {frame_idx} of {T} ({100 * frame_idx / T:.1f}%)")
+
         # measure gpu and wall time
         wall_start = time.monotonic()
         if device == "cuda":
