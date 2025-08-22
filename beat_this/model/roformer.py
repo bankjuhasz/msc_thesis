@@ -208,7 +208,8 @@ class Attention(Module):
         rotary_embed=None,
         gating=True,
         causal_transformer=False,
-        sw_attention_window_size=0
+        sw_attention_window_size=0,
+        cached_kv=False,
     ):
         super().__init__()
         self.heads = heads
@@ -236,51 +237,46 @@ class Attention(Module):
             nn.Linear(dim_inner, dim, bias=False), nn.Dropout(dropout)
         )
 
-        # kv caching for streaming inference
-        self.k_cache = None
-        self.v_cache = None
-        self.cache_idx = 0  # position in ring buffer
-
-    def forward(self, x):
+    def forward(self, x, past_kv=None, use_kv_cache=False):
         x = self.norm(x)
+        q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads)
 
-        q, k, v = rearrange(
-            self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads
-        )
+        # determine offset from cached keys, if any
+        offset = 0
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            offset = past_k.shape[-2]
 
+        # apply rotary with offset-aware embedding
         if exists(self.rotary_embed):
-            if self.k_cache is not None:
-                q, k = self.rotary_embed.rotate_queries_with_cached_keys(q, k)
-            else:
-                q = self.rotary_embed.rotate_queries_or_keys(q)
-                k = self.rotary_embed.rotate_queries_or_keys(k)
+            q = self.rotary_embed.rotate_queries_or_keys(q, offset=offset)
+            k = self.rotary_embed.rotate_queries_or_keys(k, offset=offset)
 
-        # update caches
-        if self.k_cache is None:
-            self.k_cache, self.v_cache = k, v
-        else:
-            self.k_cache = torch.cat([self.k_cache, k], dim=2)
-            self.v_cache = torch.cat([self.v_cache, v], dim=2)
+        # append new keys/values to past if provided
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
 
-            if (self.sw_attention_window_size > 0) and (self.k_cache.shape[2] > self.sw_attention_window_size):
-                self.k_cache = self.k_cache[:, :, -self.sw_attention_window_size:, :]
-                self.v_cache = self.v_cache[:, :, -self.sw_attention_window_size:, :]
+        # prune to sliding window size
+        if (self.sw_attention_window_size > 0) and (k.shape[2] > self.sw_attention_window_size):
+            k = k[:, :, -self.sw_attention_window_size:, :]
+            v = v[:, :, -self.sw_attention_window_size:, :]
 
-        # use cached K, V always
-        out = self.attend(q, self.k_cache, self.v_cache)
+        out = self.attend(q, k, v)
 
+        # optional gating
         if exists(self.to_gates):
             gates = self.to_gates(x)
             out = out * rearrange(gates, "b n h -> b h n 1").sigmoid()
 
         out = rearrange(out, "b h n d -> b n (h d)")
-        return self.to_out(out)
 
-    def reset_kv_cache(self):
-        """ Reset the key and value caches for streaming inference. """
-        self.k_cache = None
-        self.v_cache = None
-        self.cache_idx = 0
+        if use_kv_cache:
+            # return new cache for caller to reuse
+            return self.to_out(out), (k, v)
+        else:
+            return self.to_out(out)
 
 
 # Roformer
@@ -328,9 +324,21 @@ class Transformer(Module):
 
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
-    def forward(self, x):
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
+    def forward(self, x, past_kv=None, use_kv_cache=False):
+        new_kv = [] if use_kv_cache else None
+
+        for i, (attn, ff) in enumerate(self.layers):
+            past = past_kv[i] if (past_kv is not None and i < len(past_kv)) else None
+
+            if use_kv_cache:
+                x_attn, present = attn(x, past_kv=past, use_kv_cache=True)
+                x = x + x_attn
+                new_kv.append(present)
+            else:
+                x = x + attn(x)
+
+            x = x + ff(x)
+
         x = self.norm(x)
-        return x
+
+        return (x, new_kv) if use_kv_cache else x

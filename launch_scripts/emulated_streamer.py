@@ -137,7 +137,7 @@ def main(args):
         test_dataset="gtzan",
         fold=None,
         predict_datasplit="val", # we're intending to predict on the full songs in the validation set
-        num_workers=8
+        num_workers=1
     )
     dm.setup("predict")
     pred_loader = dm.predict_dataloader()
@@ -176,6 +176,8 @@ def main(args):
             hop_ms=hop_ms,
             pace=args.pace,
             on_step=on_step,
+            cache_conv=args.cache_conv,
+            cache_kv=args.cache_kv,
         )
         track_idx += 1
         if limit and track_idx >= limit:
