@@ -297,6 +297,7 @@ def streaming_predict(
     print(f"Current track length: {T} frames, {T * hop_s:.2f} seconds")
 
     while frame_idx < T:
+        print(f"Processing frame {frame_idx}/{T} (chunk {k})")
         # timing diagnostics
         wall_start = time.monotonic()
         if device == "cuda":
@@ -307,10 +308,14 @@ def streaming_predict(
         # get new frames
         end = min(T, frame_idx + peek_size)
         new_frames = spect[0, frame_idx:end]
+        num_new = new_frames.shape[0]
 
         # slide window --> shift old frames left and add new ones
-        buffer[0, :-new_frames.shape[0]] = buffer[0, new_frames.shape[0]:real_window]
-        buffer[0, real_window - new_frames.shape[0]:real_window] = new_frames
+        if num_new > 0:
+            # create a temporary copy of the data we want to keep
+            temp = buffer[0, num_new:real_window].clone()
+            buffer[0, :real_window - num_new] = temp
+            buffer[0, real_window - num_new:real_window] = new_frames
 
         # forward pass
         with torch.inference_mode():

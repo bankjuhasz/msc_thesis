@@ -147,9 +147,9 @@ class Attend(nn.Module):
         # caching the block mask for sw_attention for efficiency
         self._block_mask_cache: dict[tuple, BlockMask] = {}
 
-    def forward(self, q, k, v):
+    def forward(self, q, k, v, use_kv_cache=None):
 
-        if self.sw_attention_window_size > 0:
+        if self.sw_attention_window_size > 0 and not use_kv_cache:
 
             # building block mask cache key
             b, h, q_len, _ = q.shape
@@ -190,11 +190,9 @@ class Attend(nn.Module):
                 q = q * (self.scale / default_scale)
 
             return F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal = self.causal_transformer # causal mask
+                q, k, v,
+                dropout_p = self.dropout if self.training else 0.0,
+                is_causal = self.causal_transformer if not use_kv_cache else True,
             )
 
 
@@ -209,7 +207,6 @@ class Attention(Module):
         gating=True,
         causal_transformer=False,
         sw_attention_window_size=0,
-        cached_kv=False,
     ):
         super().__init__()
         self.heads = heads
@@ -258,12 +255,12 @@ class Attention(Module):
             k = torch.cat([past_k, k], dim=2)
             v = torch.cat([past_v, v], dim=2)
 
-        # prune to sliding window size
-        if (self.sw_attention_window_size > 0) and (k.shape[2] > self.sw_attention_window_size):
-            k = k[:, :, -self.sw_attention_window_size:, :]
-            v = v[:, :, -self.sw_attention_window_size:, :]
+            # prune to sliding window size
+            if (self.sw_attention_window_size > 0) and (k.shape[2] > self.sw_attention_window_size):
+                k = k[:, :, -self.sw_attention_window_size:, :]
+                v = v[:, :, -self.sw_attention_window_size:, :]
 
-        out = self.attend(q, k, v)
+        out = self.attend(q, k, v, use_kv_cache=use_kv_cache)
 
         # optional gating
         if exists(self.to_gates):
@@ -325,11 +322,10 @@ class Transformer(Module):
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
     def forward(self, x, past_kv=None, use_kv_cache=False):
+        # past_key_values: None or tuple[past_k, past_v] per layer
         new_kv = [] if use_kv_cache else None
-
         for i, (attn, ff) in enumerate(self.layers):
             past = past_kv[i] if (past_kv is not None and i < len(past_kv)) else None
-
             if use_kv_cache:
                 x_attn, present = attn(x, past_kv=past, use_kv_cache=True)
                 x = x + x_attn

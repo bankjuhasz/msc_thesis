@@ -49,7 +49,6 @@ class BeatThis(nn.Module):
         causal_transformer=False,
         causal_convolution=False,
         sw_attention_window_size=0,
-        use_kv_cache=False,
     ):
         super().__init__()
         # shared rotary embedding for frontend blocks and transformer blocks
@@ -74,7 +73,6 @@ class BeatThis(nn.Module):
                     causal_transformer,
                     causal_convolution,
                     sw_attention_window_size,
-                    use_kv_cache=use_kv_cache,
                 )
             )
             dim *= 2
@@ -156,7 +154,6 @@ class BeatThis(nn.Module):
         causal_transformer: bool = False,
         causal_convolution: bool = False,
         sw_attention_window_size: int = 0,
-        use_kv_cache = False,
     ) -> nn.Module:
         if partial_transformers and (head_dim is None or rotary_embed is None):
             raise ValueError(
@@ -179,7 +176,7 @@ class BeatThis(nn.Module):
             bias=False,
         )
 
-        return nn.Sequential(
+        '''block = nn.Sequential(
             OrderedDict(
                 partial=(
                     PartialFTTransformer(
@@ -202,7 +199,43 @@ class BeatThis(nn.Module):
                 norm=nn.BatchNorm2d(out_dim),
                 activation=nn.GELU(),
             )
-        )
+        )'''
+
+        class FrontendBlock(nn.Module):
+            """ Utility class to replace the original nn.Sequential with a custom forward method which is able to handle
+            past_kv and use_kv_cache arguments for the partial transformer. """
+            def __init__(self):
+                super().__init__()
+                self.partial = (
+                    PartialFTTransformer(
+                        dim=in_dim,
+                        dim_head=head_dim,
+                        n_head=in_dim // head_dim,
+                        rotary_embed=rotary_embed,
+                        dropout=dropout,
+                        causal_transformer=causal_transformer,
+                        sw_attention_window_size=sw_attention_window_size,
+                    ) if partial_transformers else nn.Identity()
+                )
+                self.conv2d = conv_layer
+                self.norm = nn.BatchNorm2d(out_dim)
+                self.activation = nn.GELU()
+
+            def forward(self, x, past_kv=None, use_kv_cache=False):
+                if use_kv_cache:
+                    x, present_kv = self.partial(x, past_kv=past_kv, use_kv_cache=True)
+                else:
+                    x = self.partial(x)
+                    present_kv = None
+
+                x = self.conv2d(x)
+                x = self.norm(x)
+                x = self.activation(x)
+
+                return (x, present_kv) if use_kv_cache else x
+
+        return FrontendBlock()
+
 
     @staticmethod
     def _init_weights(module: nn.Module):
@@ -238,7 +271,8 @@ class BeatThis(nn.Module):
             x = self.frontend.concat(x)
             x = self.frontend.linear(x)
 
-            x, present_kv = self.transformer_blocks(x, past_kv=past_kv, use_kv_cache=True)
+            x, transformer_present = self.transformer_blocks(x, past_kv=transformer_past, use_kv_cache=True)
+            present_kv.extend(transformer_present)
         else:
             # original path --> no cache, full recompute
             x = self.frontend(x)
@@ -327,14 +361,11 @@ class PartialFTTransformer(nn.Module):
         dropout: float,
         causal_transformer=False,
         sw_attention_window_size=0,
-        cached_kv: bool = False,
-        past_kv: tuple[torch.Tensor, torch.Tensor] = None,
     ):
         super().__init__()
 
         assert dim % dim_head == 0, "dim must be divisible by dim_head"
         assert dim // dim_head == n_head, "n_head must be equal to dim // dim_head"
-        self.cached_kv = cached_kv
         # frequency directed partial transformer
         self.attnF = roformer.Attention(
             dim,
@@ -344,7 +375,6 @@ class PartialFTTransformer(nn.Module):
             rotary_embed=rotary_embed,
             causal_transformer=False, # always False for frequency direction
             sw_attention_window_size=0, # always 0 for frequency direction
-            cached_kv=False, # always False for frequency direction
         )
         self.ffF = roformer.FeedForward(dim, dropout=dropout)
         # time directed partial transformer
@@ -356,31 +386,33 @@ class PartialFTTransformer(nn.Module):
             rotary_embed=rotary_embed,
             causal_transformer=causal_transformer,
             sw_attention_window_size=sw_attention_window_size,
-            cached_kv=cached_kv,
         )
         self.ffT = roformer.FeedForward(dim, dropout=dropout)
 
-    def forward(self, x):
+    def forward(self, x, past_kv=None, use_kv_cache=False):
         b = len(x)
+
         # frequency directed partial transformer
         x = rearrange(x, "b c f t -> (b t) f c")
-        if self.cached_kv:
-            attn_out, _ = self.attnF(x) # unpack, as forward returns a tuple (attn_out, present)
-        else:
-            attn_out = self.attnF(x)
-        x = x + attn_out
+        x = x + self.attnF(x) # never uses cached kv
         x = x + self.ffF(x)
 
         # time directed partial transformer
         x = rearrange(x, "(b t) f c ->(b f) t c", b=b)
-        if self.cached_kv:
-            attn_out, _ = self.attnT(x) # unpack, as forward returns a tuple (attn_out, present)
+        if use_kv_cache:
+            attn_out, present_kv = self.attnT(x, past_kv=past_kv, use_kv_cache=True)
         else:
             attn_out = self.attnT(x)
         x = x + attn_out
+
+        # feed-forward
         x = x + self.ffT(x)
         x = rearrange(x, "(b f) t c -> b c f t", b=b)
-        return x
+
+        if use_kv_cache:
+            return x, present_kv
+        else:
+            return x
 
 
 class SumHead(nn.Module):
