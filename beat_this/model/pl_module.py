@@ -312,10 +312,17 @@ class PLBeatThis(LightningModule):
                 model_prediction = streaming_predict(
                     model=self.model,
                     spect=batch["spect"],
-                    #window_size=self.hparams.sw_attention_window_size,
-                    window_size=1024,
-                    peek_size=self.hparams.peek_size,
-                    device=device
+                    window_size=512,
+                    #peek_size=self.hparams.peek_size,
+                    peek_size=1,
+                    device=device,
+                    tolerance=3,
+                    report=False,
+                    hop_ms = 20,
+                    pace = False,
+                    on_step = None,
+                    cache_conv = False,
+                    cache_kv = True,
                 )
             else:
                 # compute predictions for the full piece without streaming

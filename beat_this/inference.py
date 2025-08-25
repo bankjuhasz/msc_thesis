@@ -297,7 +297,6 @@ def streaming_predict(
     print(f"Current track length: {T} frames, {T * hop_s:.2f} seconds")
 
     while frame_idx < T:
-        print(f"Processing frame {frame_idx}/{T} (chunk {k})")
         # timing diagnostics
         wall_start = time.monotonic()
         if device == "cuda":
@@ -319,7 +318,10 @@ def streaming_predict(
 
         # forward pass
         with torch.inference_mode():
-            preds, past = model(buffer, past_kv=past, use_kv_cache=cache_kv)
+            if cache_kv:
+                preds, past = model(buffer, past_kv=past, use_kv_cache=cache_kv)
+            else:
+                preds = model(buffer)
 
         # save predictions
         beat_dev[frame_idx:end] = preds['beat'][0, real_window - new_frames.shape[0]:real_window]

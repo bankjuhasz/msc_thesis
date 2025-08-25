@@ -5,6 +5,7 @@ import numpy as np
 from pytorch_lightning import Trainer, seed_everything
 
 from beat_this.dataset import BeatDataModule
+from beat_this.dataset.dataset import BeatTrackingDataset
 from beat_this.inference import load_checkpoint
 from beat_this.model.pl_module import PLBeatThis
 
@@ -23,7 +24,7 @@ def main(args):
         checkpoint = load_checkpoint(checkpoint_path)
 
         # create datamodule
-        datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit)
+        datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit, args.max_samples)
         # create model and trainer
         model, trainer = plmodel_setup(
             checkpoint,
@@ -176,7 +177,7 @@ def main(args):
             raise ValueError(f"Unknown aggregation type {args.aggregation_type}")
 
 
-def datamodule_setup(checkpoint, num_workers, datasplit):
+def datamodule_setup(checkpoint, num_workers, datasplit, max_samples=None):
     # Load the datamodule
     print("Creating datamodule")
     data_dir = Path(__file__).parent.parent.relative_to(Path.cwd()) / "data"
@@ -186,8 +187,24 @@ def datamodule_setup(checkpoint, num_workers, datasplit):
         datamodule_hparams["num_workers"] = num_workers
     datamodule_hparams["predict_datasplit"] = datasplit
     datamodule_hparams["data_dir"] = data_dir
+
     datamodule = BeatDataModule(**datamodule_hparams)
     datamodule.setup(stage="predict")
+
+    if max_samples is not None and datasplit == "val":
+        # Limit the validation items to first max_samples
+        datamodule.val_items = datamodule.val_items[:max_samples]
+        print(f"Limited validation set to first {max_samples} samples")
+        # Recreate the predict dataset with limited samples
+        datamodule.predict_dataset = BeatTrackingDataset(
+            datamodule.val_items,
+            deterministic=True,
+            augmentations={},
+            train_length=None,
+            data_folder=data_dir,
+            spect_fps=datamodule.spect_fps,
+        )
+
     return datamodule
 
 
@@ -339,6 +356,19 @@ if __name__ == "__main__":
         default=False,
         action=argparse.BooleanOptionalAction,
         help="Predictions in streaming mode with a fixed buffer and chunk size."
+    )
+    parser.add_argument(
+        "--use_kv_cache",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="If True, use key-value caching for transformer layers during streaming inference. Should ONLY be used if"
+             " streaming_inference is True."
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="If set, only use this many samples from the validation set"
     )
 
     args = parser.parse_args()

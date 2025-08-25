@@ -147,7 +147,7 @@ class Attend(nn.Module):
         # caching the block mask for sw_attention for efficiency
         self._block_mask_cache: dict[tuple, BlockMask] = {}
 
-    def forward(self, q, k, v, use_kv_cache=None):
+    def forward(self, q, k, v, use_kv_cache=False):
 
         if self.sw_attention_window_size > 0 and not use_kv_cache:
 
@@ -192,7 +192,7 @@ class Attend(nn.Module):
             return F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p = self.dropout if self.training else 0.0,
-                is_causal = self.causal_transformer if not use_kv_cache else True,
+                is_causal = False if use_kv_cache else self.causal_transformer,
             )
 
 
@@ -246,8 +246,8 @@ class Attention(Module):
 
         # apply rotary with offset-aware embedding
         if exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q, offset=offset)
-            k = self.rotary_embed.rotate_queries_or_keys(k, offset=offset)
+            q = self.rotary_embed.rotate_queries_or_keys(q, offset=k.shape[-2] - q.shape[-2])
+            k = self.rotary_embed.rotate_queries_or_keys(k, offset=k.shape[-2] - q.shape[-2])
 
         # append new keys/values to past if provided
         if past_kv is not None:
