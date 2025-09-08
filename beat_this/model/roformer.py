@@ -143,41 +143,47 @@ class Attend(nn.Module):
         self.dropout = dropout
         self.scale = scale
         self.causal_transformer = causal_transformer
-        self.sw_attention_window_size = sw_attention_window_size
-        # caching the block mask for sw_attention for efficiency
-        self._block_mask_cache: dict[tuple, BlockMask] = {}
+        self.sw_attention_window_size = int(sw_attention_window_size)
+        self._block_mask_cache = {} # caching the block mask for sw_attention for efficiency
+
+    @staticmethod
+    def _force_lastdim_inner(x):
+        # robustly ensure last dim is contiguous
+        return x if x.stride(-1) == 1 else x.transpose(-1, -2).contiguous().transpose(-1, -2)
+
+    @torch._dynamo.disable()  # build mask in eager to avoid ShapeAsConstantBuffer issues
+    def _get_block_mask(self, q_len, kv_len, device):
+        dev_key = -1 if device.type != "cuda" else (device.index or 0)
+        key = (q_len, kv_len, dev_key, self.sw_attention_window_size)
+        bm = self._block_mask_cache.get(key)
+        if bm is not None:
+            return bm
+
+        def local_mask(b, h, i, j):
+            return (j >= i - self.sw_attention_window_size) & (j <= i)
+
+        bm = create_block_mask(
+            mask_mod=local_mask,
+            B=None, H=None, # for efficiency --> see FlexAttention blogpost
+            Q_LEN=q_len, KV_LEN=kv_len,
+            device=device,
+            #_compile = True
+        )
+        self._block_mask_cache[key] = bm
+        return bm
 
     def forward(self, q, k, v, use_kv_cache=False):
 
-        if self.sw_attention_window_size > 0 and not use_kv_cache:
-
+        if (self.sw_attention_window_size > 0) and (not use_kv_cache):
             # building block mask cache key
             b, h, q_len, _ = q.shape
             kv_len = k.shape[2]
-            cache_key = (b, h, q_len, kv_len, q.device)
-            # check if the block mask is already cached
-            block_mask = self._block_mask_cache.get(cache_key)
 
-            # if not cached, create the block mask
-            if block_mask is None:
-                # mask_mod
-                def local_mask(b, h, i, j):
-                    return (j >= i - self.sw_attention_window_size) & (j <= i)
+            block_mask = self._get_block_mask(q_len, kv_len, q.device)
+            q = self._force_lastdim_inner(q)
+            k = self._force_lastdim_inner(k)
+            v = self._force_lastdim_inner(v)
 
-                block_mask = create_block_mask(
-                    mask_mod=local_mask,
-                    B=None, # for efficiency --> see FlexAttention blogpost
-                    H=None, # for efficiency --> see FlexAttention blogpost
-                    Q_LEN=q_len,
-                    KV_LEN=kv_len, # key/value length --> same as query length as we're doing self-attention
-                    device=q.device,
-                    BLOCK_SIZE=128, #self.sw_attention_window_size,
-                    _compile=True
-                )
-                # cache the block mask for future use
-                self._block_mask_cache[cache_key] = block_mask
-
-            # skip all-zero blocks and execute only the necessary local attention
             return flex_attention(
                 q, k, v,
                 block_mask=block_mask,
@@ -234,32 +240,41 @@ class Attention(Module):
             nn.Linear(dim_inner, dim, bias=False), nn.Dropout(dropout)
         )
 
-    def forward(self, x, past_kv=None, use_kv_cache=False):
+    @staticmethod
+    def _force_lastdim_inner(x):
+        # robustly ensure last dim is contiguous
+        return x if x.stride(-1) == 1 else x.transpose(-1, -2).contiguous().transpose(-1, -2)
+
+    def forward(self, x, past_kv=None, use_kv_cache=False, peek_size=None, frame_idx=0):
         x = self.norm(x)
-        q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads)
+        q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads).contiguous()
 
-        # determine offset from cached keys, if any
-        offset = 0
-        if past_kv is not None:
-            past_k, past_v = past_kv
-            offset = past_k.shape[-2]
-
+        offset = frame_idx
         # apply rotary with offset-aware embedding
         if exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q, offset=k.shape[-2] - q.shape[-2])
-            k = self.rotary_embed.rotate_queries_or_keys(k, offset=k.shape[-2] - q.shape[-2])
+            q = self.rotary_embed.rotate_queries_or_keys(q, offset=offset)
+            k = self.rotary_embed.rotate_queries_or_keys(k, offset=offset)
+            #q, k, v = _check("after rope", q, k, v)
+
+        q = self._force_lastdim_inner(q)
+        k = self._force_lastdim_inner(k)
+        v = self._force_lastdim_inner(v)
+        #q, k, v = _check("after force-inner", q, k, v)
 
         # append new keys/values to past if provided
         if past_kv is not None:
             past_k, past_v = past_kv
-            k = torch.cat([past_k, k], dim=2)
-            v = torch.cat([past_v, v], dim=2)
+            k_new = k[:, :, -peek_size:, :] # only the new keys/values
+            v_new = v[:, :, -peek_size:, :]
+            k = torch.cat([past_k, k_new], dim=2)
+            v = torch.cat([past_v, v_new], dim=2)
 
-            # prune to sliding window size
-            if (self.sw_attention_window_size > 0) and (k.shape[2] > self.sw_attention_window_size):
-                k = k[:, :, -self.sw_attention_window_size:, :]
-                v = v[:, :, -self.sw_attention_window_size:, :]
+            # prune
+            if k.shape[2] > 256:
+                k = k[:, :, -256:, :]
+                v = v[:, :, -256:, :]
 
+        #q, k, v = _check("before attend", q, k, v)
         out = self.attend(q, k, v, use_kv_cache=use_kv_cache)
 
         # optional gating
@@ -275,6 +290,9 @@ class Attention(Module):
         else:
             return self.to_out(out)
 
+def _check(tag, q, k, v):
+    print(f"{tag}: q {q.shape} {q.stride()} | k {k.stride()} | v {v.stride()}")
+    return q, k, v
 
 # Roformer
 
