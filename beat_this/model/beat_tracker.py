@@ -8,6 +8,7 @@ import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from rotary_embedding_torch import RotaryEmbedding
+#from beat_this.model.roformer import RotaryEmbedding, apply_rotary_pos_emb
 from torch import nn
 
 from beat_this.model import roformer
@@ -221,12 +222,11 @@ class BeatThis(nn.Module):
                 self.norm = nn.BatchNorm2d(out_dim)
                 self.activation = nn.GELU()
 
-            def forward(self, x, past_kv=None, use_kv_cache=False):
+            def forward(self, x, past_kv=None, use_kv_cache=False, peek_size=None, frame_idx=0):
                 if use_kv_cache:
-                    x, present_kv = self.partial(x, past_kv=past_kv, use_kv_cache=True)
+                    x, present_kv = self.partial(x, past_kv=past_kv, use_kv_cache=True, peek_size=peek_size, frame_idx=frame_idx)
                 else:
                     x = self.partial(x)
-                    present_kv = None
 
                 x = self.conv2d(x)
                 x = self.norm(x)
@@ -255,7 +255,7 @@ class BeatThis(nn.Module):
                 with torch.no_grad():
                     module.weight[module.padding_idx].fill_(0)
 
-    def forward(self, x, past_kv=None, use_kv_cache: bool = False):
+    def forward(self, x, past_kv=None, use_kv_cache: bool = False, peek_size=None, frame_idx=0):
         if use_kv_cache:
             frontend_past = past_kv[:3] if past_kv is not None else None # first 3 are frontend block pasts
             transformer_past = past_kv[3:] if past_kv is not None else None # rest are transformer block pasts
@@ -265,13 +265,13 @@ class BeatThis(nn.Module):
             present_kv = []
             for i, block in enumerate(self.frontend.blocks):
                 block_past = frontend_past[i] if frontend_past is not None else None
-                x, block_present = block(x, past_kv=block_past, use_kv_cache=True)
+                x, block_present = block(x, past_kv=block_past, use_kv_cache=True, peek_size=peek_size, frame_idx=frame_idx)
                 present_kv.append(block_present)
 
             x = self.frontend.concat(x)
             x = self.frontend.linear(x)
 
-            x, transformer_present = self.transformer_blocks(x, past_kv=transformer_past, use_kv_cache=True)
+            x, transformer_present = self.transformer_blocks(x, past_kv=transformer_past, use_kv_cache=True, peek_size=peek_size, frame_idx=frame_idx)
             present_kv.extend(transformer_present)
         else:
             # original path --> no cache, full recompute
@@ -389,23 +389,21 @@ class PartialFTTransformer(nn.Module):
         )
         self.ffT = roformer.FeedForward(dim, dropout=dropout)
 
-    def forward(self, x, past_kv=None, use_kv_cache=False):
+    def forward(self, x, past_kv=None, use_kv_cache=False, peek_size=None, frame_idx=0):
         b = len(x)
 
         # frequency directed partial transformer
         x = rearrange(x, "b c f t -> (b t) f c")
-        x = x + self.attnF(x) # never uses cached kv
+        x = x + self.attnF(x, frame_idx=frame_idx) # never uses cached kv
         x = x + self.ffF(x)
 
         # time directed partial transformer
         x = rearrange(x, "(b t) f c ->(b f) t c", b=b)
         if use_kv_cache:
-            attn_out, present_kv = self.attnT(x, past_kv=past_kv, use_kv_cache=True)
+            attn_out, present_kv = self.attnT(x, past_kv=past_kv, use_kv_cache=True, peek_size=peek_size, frame_idx=frame_idx)
         else:
             attn_out = self.attnT(x)
         x = x + attn_out
-
-        # feed-forward
         x = x + self.ffT(x)
         x = rearrange(x, "(b f) t c -> b c f t", b=b)
 

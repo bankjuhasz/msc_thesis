@@ -5,7 +5,8 @@ from tqdm.auto import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import csv
-from torch.profiler import profile, ProfilerActivity
+from torch.profiler import schedule, profile, ProfilerActivity
+import torch
 
 from beat_this.dataset.dataset import BeatDataModule
 from beat_this.inference import streaming_predict, load_model
@@ -155,37 +156,46 @@ def main(args):
         })
         step_times.append(kw)
 
-    #with profile(
-    #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-    #    record_shapes=True,  # show input shapes per op
-    #    profile_memory=True,  # track allocs
-    #    with_stack=False  # True = Python call stacks (slower)
-    #) as prof:
-    limit = 5
-    for batch in tqdm(pred_loader, total=limit, desc="Streaming (val)", unit="track"):
-        track_id = f"track_{track_idx}"
-        spect = batch["spect"]  # (1, T, F)
-        out = streaming_predict(
-            model,
-            spect=spect,
-            window_size=args.window_size,
-            peek_size=args.peek_size,
-            device=args.device,
-            tolerance=3,
-            report=args.report,
-            hop_ms=hop_ms,
-            pace=args.pace,
-            on_step=on_step,
-            cache_conv=args.cache_conv,
-            cache_kv=args.cache_kv,
-        )
-        track_idx += 1
-        if limit and track_idx >= limit:
-            break
+    sched = schedule(wait=1024, warmup=128, active=386, repeat=1)
+    with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=sched,
+            record_shapes=False,
+            profile_memory=False,
+            with_stack=False,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler("prof_traces"),
+    ) as prof:
+        limit = 1
+        for batch in tqdm(pred_loader, total=limit, desc="Streaming (val)", unit="track"):
+            track_id = f"track_{track_idx}"
+            spect = batch["spect"]  # (1, T, F)
+            spect = spect[:, :1538, :]  # only profile first 1000 frames
+            out = streaming_predict(
+                model,
+                spect=spect,
+                window_size=args.window_size,
+                peek_size=args.peek_size,
+                device=args.device,
+                tolerance=0,
+                report=args.report,
+                hop_ms=hop_ms,
+                pace=args.pace,
+                on_step=on_step,
+                cache_conv=args.cache_conv,
+                cache_kv=args.cache_kv,
+                profiler=prof,
+            )
+            track_idx += 1
+            if limit and track_idx >= limit:
+                break
 
-    '''print(prof.key_averages().table(
-        sort_by="self_cuda_time_total", row_limit=30
-    ))'''
+    # ensure all CUDA work finished before reading results
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+
+    # pick a sort key that exists for the active device
+    sort_key = "self_cuda_time_total" if args.device == "cuda" else "self_cpu_time_total"
+    print(prof.key_averages().table(sort_by=sort_key, row_limit=30))
 
     if step_times and args.report:
         s = summarize(step_times, hop_ms)
@@ -210,7 +220,7 @@ if __name__ == "__main__":
         type=str,
         default="cuda",
         choices=["cpu", "cuda"],
-        help="Device to run the model on (default: gpu). If set to 'gpu', it will use the first available GPU, otherwise it will use CPU."
+        help="Device to run the model on."
     )
     parser.add_argument(
         "--window-size",
@@ -221,8 +231,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--peek-size",
         type=int,
-        default=2,
-        help="Number of frames to peek ahead in the audio stream, i.e., nr of new frames per iteration (default: 2)."
+        default=1,
+        help="Number of frames to peek ahead in the audio stream, i.e., nr of new frames per iteration (default: 1)."
     )
     parser.add_argument(
         "--cache-conv",

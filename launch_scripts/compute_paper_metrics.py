@@ -17,6 +17,10 @@ seed_everything(0, workers=True)
 
 
 def main(args):
+    if not args.streaming_inference:
+        assert not args.use_kv_cache, "use_kv_cache can only be True if streaming_inference is True"
+        assert not args.use_conv_cache, "use_conv_cache can only be True if streaming_inference is True"
+
     if len(args.models) == 1:
         print("Single model prediction for", args.models[0])
         # single model prediction
@@ -34,6 +38,8 @@ def main(args):
             segment_metrics=args.segment_metrics,
             full_piece_metrics=args.full_piece_metrics,
             streaming_inference=args.streaming_inference,
+            use_kv_cache=args.use_kv_cache,
+            use_conv_cache=args.use_kv_cache,
         )
         # predict
         metrics, dataset, preds, piece = compute_predictions(
@@ -216,6 +222,8 @@ def plmodel_setup(
         segment_metrics=False,
         full_piece_metrics=False,
         streaming_inference=False,
+        use_kv_cache=False,
+        use_conv_cache=False,
 ):
     """
     Set up the pytorch lightning model and trainer for evaluation.
@@ -240,6 +248,8 @@ def plmodel_setup(
     checkpoint["hyper_parameters"]["segment_metrics"] = segment_metrics
     checkpoint["hyper_parameters"]["full_piece_metrics"] = full_piece_metrics
     checkpoint["hyper_parameters"]["streaming_inference"] = streaming_inference
+    checkpoint["hyper_parameters"]["use_kv_cache"] = use_kv_cache
+    checkpoint["hyper_parameters"]["use_conv_cache"] = use_conv_cache
 
     model = PLBeatThis(**checkpoint["hyper_parameters"])
     model.load_state_dict(checkpoint["state_dict"])
@@ -355,14 +365,19 @@ if __name__ == "__main__":
         "--streaming_inference",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="Predictions in streaming mode with a fixed buffer and chunk size."
+        help="Predictions in streaming mode with a fixed buffer and peek size. By default, peek size is a single frame."
     )
     parser.add_argument(
         "--use_kv_cache",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="If True, use key-value caching for transformer layers during streaming inference. Should ONLY be used if"
-             " streaming_inference is True."
+        help="If True, use key-value caching for transformer layers during streaming inference. Should ONLY be used if streaming_inference is True."
+    )
+    parser.add_argument(
+        "--use_conv_cache",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="If True, use cached convolutions during streaming inference. Should ONLY be used if streaming_inference is True."
     )
     parser.add_argument(
         "--max_samples",

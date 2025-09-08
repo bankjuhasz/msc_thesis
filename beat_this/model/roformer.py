@@ -71,7 +71,7 @@ class CausalConvBlock(nn.Module):
         """
         if getattr(self, "streaming", False) is True:
             # if streaming mode is enabled, use the streaming forward method
-            return self.forward_streaming(input)
+            return self.streaming_forward(input)
         else:
             # pytorch only includes symmetric padding --> we are removing any padding from the right hand side (future)
             x = self.conv(input)[:, :, :, :-self.crop]
@@ -339,20 +339,23 @@ class Transformer(Module):
 
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
-    def forward(self, x, past_kv=None, use_kv_cache=False):
-        # past_key_values: None or tuple[past_k, past_v] per layer
-        new_kv = [] if use_kv_cache else None
-        for i, (attn, ff) in enumerate(self.layers):
-            past = past_kv[i] if (past_kv is not None and i < len(past_kv)) else None
-            if use_kv_cache:
-                x_attn, present = attn(x, past_kv=past, use_kv_cache=True)
+    def forward(self, x, past_kv=None, use_kv_cache=False, peek_size=None, frame_idx=0):
+        if use_kv_cache:
+            new_kv = [] if use_kv_cache else None # past_key_values: None or tuple[past_k, past_v] per layer
+            for i, (attn, ff) in enumerate(self.layers):
+                past = past_kv[i] if (past_kv is not None and i < len(past_kv)) else None
+                x_attn, present = attn(x, past_kv=past, use_kv_cache=True, peek_size=peek_size, frame_idx=frame_idx)
                 x = x + x_attn
                 new_kv.append(present)
-            else:
-                x = x + attn(x)
+                x = x + ff(x)
 
-            x = x + ff(x)
+            x = self.norm(x)
+            return (x, new_kv)
 
-        x = self.norm(x)
+        else:
+            for attn, ff in self.layers:
+                x = attn(x) + x
+                x = ff(x) + x
 
-        return (x, new_kv) if use_kv_cache else x
+            x = self.norm(x)
+            return x

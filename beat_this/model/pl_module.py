@@ -45,6 +45,8 @@ class PLBeatThis(LightningModule):
         segment_metrics=False,
         full_piece_metrics=False,
         streaming_inference= False,
+        use_kv_cache= False,
+        use_conv_cache= False,
         peek_size: int = 256 # lookahead size for streaming inference
     ):
         super().__init__()
@@ -312,17 +314,16 @@ class PLBeatThis(LightningModule):
                 model_prediction = streaming_predict(
                     model=self.model,
                     spect=batch["spect"],
-                    window_size=512,
-                    #peek_size=self.hparams.peek_size,
+                    window_size=self.hparams.sw_attention_window_size,
                     peek_size=1,
                     device=device,
-                    tolerance=3,
+                    tolerance=0,
                     report=False,
-                    hop_ms = 20,
+                    hop_ms = 1000/self.hparams.fps, # 20 ms hop for 50 fps
                     pace = False,
                     on_step = None,
                     cache_conv = False,
-                    cache_kv = True,
+                    cache_kv = self.hparams.use_kv_cache,
                 )
             else:
                 # compute predictions for the full piece without streaming

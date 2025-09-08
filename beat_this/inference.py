@@ -248,6 +248,7 @@ def streaming_predict(
     on_step = None,
     cache_conv: bool = False,
     cache_kv: bool = False,
+    profiler = None,
 ) -> dict:
     """
     Run a full-song spectrogram through model in streaming, fixed-memory mode. The GPU memory should ideally hold only
@@ -272,17 +273,18 @@ def streaming_predict(
     Returns:
         dict:       dictionary containing 'beat' and 'downbeat' predictions
     """
-
+    print(f"Device: {device}")
     model.eval()
     spect = spect.to(device)
     B, T, F = spect.shape
+
+    print("\nModel Architecture:")
+    print(model)
 
     # we “reserve” pad_size frames at the end of each chunk that are never used to counteract the effect of using
     # ShiftTolerantBCELoss during training
     real_window = window_size - tolerance
     buffer = torch.zeros((1, window_size, F), device=device) # single buffer for the sliding window
-    if tolerance:
-        buffer[0, real_window:].zero_() # zero the padding part at the end of the buffer
 
     # output buffers
     beat_dev = torch.empty(T, device=device)
@@ -297,12 +299,14 @@ def streaming_predict(
     print(f"Current track length: {T} frames, {T * hop_s:.2f} seconds")
 
     while frame_idx < T:
+        #print(f"Processing frame {frame_idx}/{T} (chunk {k})")
         # timing diagnostics
-        wall_start = time.monotonic()
-        if device == "cuda":
-            start_evt = torch.cuda.Event(enable_timing=True);
-            end_evt = torch.cuda.Event(enable_timing=True)
-            start_evt.record()
+        if pace:
+            wall_start = time.monotonic()
+            if device == "cuda":
+                start_evt = torch.cuda.Event(enable_timing=True)
+                end_evt = torch.cuda.Event(enable_timing=True)
+                start_evt.record()
 
         # get new frames
         end = min(T, frame_idx + peek_size)
@@ -311,15 +315,14 @@ def streaming_predict(
 
         # slide window --> shift old frames left and add new ones
         if num_new > 0:
-            # create a temporary copy of the data we want to keep
-            temp = buffer[0, num_new:real_window].clone()
+            temp = buffer[0, num_new:real_window].clone() # temporary copy of the data we want to keep
             buffer[0, :real_window - num_new] = temp
             buffer[0, real_window - num_new:real_window] = new_frames
 
         # forward pass
         with torch.inference_mode():
             if cache_kv:
-                preds, past = model(buffer, past_kv=past, use_kv_cache=cache_kv)
+                preds, past = model(buffer, past_kv=past, use_kv_cache=cache_kv, peek_size=peek_size, frame_idx=frame_idx)
             else:
                 preds = model(buffer)
 
@@ -327,14 +330,19 @@ def streaming_predict(
         beat_dev[frame_idx:end] = preds['beat'][0, real_window - new_frames.shape[0]:real_window]
         downbeat_dev[frame_idx:end] = preds['downbeat'][0, real_window - new_frames.shape[0]:real_window]
 
-        if device == "cuda":
-            end_evt.record()
-            end_evt.synchronize()
-            gpu_ms = start_evt.elapsed_time(end_evt)
-        wall_ms = (time.monotonic() - wall_start) * 1000.0
+        # Print KV cache shapes correctly
+        '''if cache_kv and past is not None:
+            shapes = [(k.shape, v.shape) for k, v in past]
+            print(f"KV cache shapes: {shapes}")'''
 
-        late_ms = 0.0
         if pace:
+            wall_ms = (time.monotonic() - wall_start) * 1000.0
+            if device == "cuda":
+                end_evt.record()
+                end_evt.synchronize()
+                gpu_ms = start_evt.elapsed_time(end_evt)
+
+            late_ms = 0.0
             frames_done += end - frame_idx
             deadline = t0 + frames_done * hop_s
             now = time.monotonic()
@@ -349,6 +357,9 @@ def streaming_predict(
 
         frame_idx = end
         k += 1
+
+        if profiler is not None:
+            profiler.step()
 
     return {"beat": beat_dev.cpu(), "downbeat": downbeat_dev.cpu()}
 
