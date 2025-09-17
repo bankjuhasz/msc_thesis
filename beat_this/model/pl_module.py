@@ -44,10 +44,11 @@ class PLBeatThis(LightningModule):
         sw_attention_window_size=256,
         segment_metrics=False,
         full_piece_metrics=False,
-        streaming_inference= False,
-        use_kv_cache= False,
-        use_conv_cache= False,
-        peek_size: int = 256 # lookahead size for streaming inference
+        streaming_inference=False,
+        use_kv_cache=False,
+        use_conv_cache=False,
+        peek_size=256,
+        label_shift=0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -213,6 +214,13 @@ class PLBeatThis(LightningModule):
             }
             return batch_metric
 
+    @staticmethod
+    def shift_predictions(pred_times, label_shift, fps):
+        """ Shift prediction times by -label_shift frames to correctly calculate metrics. """
+        if isinstance(pred_times, tuple):
+            return tuple(PLBeatThis.shift_predictions(x, label_shift, fps) for x in pred_times)
+        return pred_times - (label_shift / fps)
+
     def log_losses(self, losses, batch_size, step="train"):
         # log for separate targets
         for target in "beat", "downbeat":
@@ -267,6 +275,10 @@ class PLBeatThis(LightningModule):
             model_prediction["downbeat"],
             batch["padding_mask"],
         )
+        # shift predictions back if needed
+        if self.hparams.label_shift != 0:
+            postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
+            postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
         # compute the metrics
         metrics = self._compute_metrics(batch, postp_beat, postp_downbeat, step="val")
         # log
@@ -350,6 +362,10 @@ class PLBeatThis(LightningModule):
         postp_beat, postp_downbeat = self.postprocessor(
             model_prediction["beat"], model_prediction["downbeat"], None
         )
+        # shift predictions back if needed
+        if self.hparams.label_shift != 0:
+            postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
+            postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
         # compute the metrics
         metrics = self._compute_metrics(batch, postp_beat, postp_downbeat, step="test")
         return metrics, model_prediction, batch["dataset"], batch["spect_path"]

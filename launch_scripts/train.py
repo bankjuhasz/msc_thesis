@@ -17,7 +17,7 @@ def main(args):
     print("Starting a new run with the following parameters:")
     print(args)
 
-    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}{'sw' if args.sw_attention_window_size else ''}{args.sw_attention_window_size if args.sw_attention_window_size else ''}"
+    params_str = f"{'noval ' if not args.val else ''}{'hung ' if args.hung_data else ''}{'fold' + str(args.fold) + ' ' if args.fold is not None else ''}{args.loss}-h{args.transformer_dim}-aug{args.tempo_augmentation}{args.pitch_augmentation}{args.mask_augmentation}{' nosumH ' if not args.sum_head else ''}{' nopartialT ' if not args.partial_transformers else ''}{'ct=1 ' if args.causal_transformer else 'ct=0 '}{'cc=1 ' if args.causal_convolution else 'cc=0 '}{'sw' if args.sw_attention_window_size else ''}{args.sw_attention_window_size if args.sw_attention_window_size else ''}{' shifted' if args.label_shift else ''}{args.label_shift if args.label_shift else ''}"
 
     if args.logger == "wandb":
         # TO BE CHECKED
@@ -70,6 +70,7 @@ def main(args):
         hung_data=args.hung_data,
         no_val=not args.val,
         fold=args.fold,
+        label_shift=args.label_shift,
     )
     datamodule.setup(stage="fit")
 
@@ -102,6 +103,7 @@ def main(args):
         causal_transformer=args.causal_transformer,
         causal_convolution=args.causal_convolution,
         sw_attention_window_size=args.sw_attention_window_size,
+        label_shift=args.label_shift,
     )
     for part in args.compile:
         if hasattr(pl_model.model, part):
@@ -131,10 +133,6 @@ def main(args):
         precision="16-mixed",
         accumulate_grad_batches=args.accumulate_grad_batches,
         check_val_every_n_epoch=args.val_frequency,
-        # debug args
-        #max_epochs=1,
-        #limit_train_batches=1,  # only one batch
-        #limit_val_batches=0,  # skip validation
     )
 
     # resume-from-checkpoint work
@@ -289,7 +287,6 @@ if __name__ == "__main__":
         default=0,
         help="Seed for the random number generators.",
     )
-    ##################
     parser.add_argument(
         "--resume-checkpoint",
         type=str,
@@ -320,7 +317,12 @@ if __name__ == "__main__":
         default=0,
         help="Window size for the sliding window attention in frames. If 0, no sliding window attention is used."
     )
-    ##################
+    parser.add_argument(
+        "--label-shift",
+        type=int,
+        default=0,
+        help="Set the nr of frames to shift the labels by. Negative values shift the labels to the left (predicting the future).",
+    )
 
     args = parser.parse_args()
 

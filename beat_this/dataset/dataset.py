@@ -44,6 +44,7 @@ class BeatTrackingDataset(Dataset):
         deterministic=False,
         augmentations={},
         length_based_oversampling_factor=0,
+        label_shift=0,
     ):
         self.spect_basepath = data_folder / "audio" / "spectrograms"
         self.annotation_basepath = data_folder / "annotations"
@@ -77,6 +78,7 @@ class BeatTrackingDataset(Dataset):
             )
             items = oversampled_items
         self.items = items
+        self.label_shift = label_shift
 
     def _load_dataset_infos(self, datasets):
         dataset_info = {}
@@ -163,6 +165,19 @@ class BeatTrackingDataset(Dataset):
         """Return number of downbeats of given item."""
         return (self.items[index]["beat_value"] == 1).sum()
 
+    def shift_labels(self, labels: np.ndarray, shift: int):
+        """
+        Shift all labels by self.label_shift frames to facilitate predictions into the future.
+        Negative shifts --> predict the future | Positive shifts --> predict the past.
+        """
+        shifted = np.roll(labels, shift)
+        # zero out wrapped region to avoid wraparound artifacts
+        if shift > 0:
+            shifted[:shift] = 0
+        elif shift < 0:
+            shifted[shift:] = 0
+        return shifted
+
     def __len__(self):
         return len(self.items)
 
@@ -211,6 +226,10 @@ class BeatTrackingDataset(Dataset):
                 truth_orig_beat,
                 truth_orig_downbeat,
             ) = prepare_annotations(item, start_frame, end_frame, self.fps)
+
+            if self.label_shift != 0: # shift labels to predict into the future
+                framewise_truth_beat = self.shift_labels(framewise_truth_beat, self.label_shift)
+                framewise_truth_downbeat = self.shift_labels(framewise_truth_downbeat, self.label_shift)
 
             # restructure the item dict with the correct training information
             item = {
@@ -282,6 +301,7 @@ class BeatDataModule(pl.LightningDataModule):
         length_based_oversampling_factor=0,
         fold=None,
         predict_datasplit="test",
+        label_shift=0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -301,6 +321,7 @@ class BeatDataModule(pl.LightningDataModule):
         self.length_based_oversampling_factor = length_based_oversampling_factor
         self.fold = fold
         self.predict_datasplit = predict_datasplit
+        self.label_shift = label_shift
 
     def setup(self, stage):
         if self.initialized.get(stage, False):
@@ -372,6 +393,7 @@ class BeatDataModule(pl.LightningDataModule):
                 train_length=self.train_length,
                 data_folder=self.data_dir,
                 spect_fps=self.spect_fps,
+                label_shift=self.label_shift,
             )
             print(
                 "Validation set:",
@@ -391,6 +413,7 @@ class BeatDataModule(pl.LightningDataModule):
                 data_folder=self.data_dir,
                 spect_fps=self.spect_fps,
                 length_based_oversampling_factor=self.length_based_oversampling_factor,
+                label_shift=self.label_shift,
             )
             print(
                 "Training set:",
@@ -416,6 +439,7 @@ class BeatDataModule(pl.LightningDataModule):
                 train_length=None,
                 data_folder=self.data_dir,
                 spect_fps=self.spect_fps,
+                label_shift=self.label_shift,
             )
             print(
                 "Test set:", len(self.test_dataset), "items from:", self.test_set_name
