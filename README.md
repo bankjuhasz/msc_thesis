@@ -22,10 +22,13 @@ Here is a list of the current tasks:
 - [x] Implement causal transformer blocks
 - [x] Analyze the impact of causality on model performance
 - [x] Implement a sliding window attention using flexattention
-- [x] Cached convolutions
+- [ ] Cached convolutions (IN PROGRESS - maybe skip?)
 - [x] Cached attention (KV caching)
 - [ ] Train with shifted labels and analyze the impact on model performance (IN PROGRESS)
-- [x] Implement a streaming prediction pipeline
+- [x] Implement an emulated_streaming prediction pipeline to measure prediction _speed_
+- [ ] Implement a streaming prediction pipeline with causal postprocessing (IN PROGRESS)
+  - [ ] Particle filter
+  - [ ] Forward HMM
 - [ ] Compare performance of vanilla streaming, cached convs and KV caching (IN PROGRESS)
 
 As the project progresses, this ReadMe will be updated to reflect the current state of the live version. You can read

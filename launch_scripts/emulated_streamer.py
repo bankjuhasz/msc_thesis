@@ -147,16 +147,16 @@ def main(args):
     track_idx = 0
     def on_step(**kw):
         budget_ms = kw["new_frames"] * hop_ms
-        late_flag = 1 if kw["late_ms"] > 0.05 else 0  # 0.05 ms tolerance
+        late_flag = 1 if kw["late_ms"] > 0 else 0
         kw.update({
             "budget_ms": budget_ms,
             "late_flag": late_flag,
             "track_idx": track_idx,
-            "step_abs": len(step_times),  # global step index across all tracks
+            "step_abs": len(step_times), # global step index across all tracks
         })
         step_times.append(kw)
 
-    sched = schedule(wait=1024, warmup=128, active=386, repeat=1)
+    """sched = schedule(wait=1024, warmup=128, active=386, repeat=1)
     with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             schedule=sched,
@@ -164,38 +164,37 @@ def main(args):
             profile_memory=False,
             with_stack=False,
             on_trace_ready=torch.profiler.tensorboard_trace_handler("prof_traces"),
-    ) as prof:
-        limit = 1
-        for batch in tqdm(pred_loader, total=limit, desc="Streaming (val)", unit="track"):
-            track_id = f"track_{track_idx}"
-            spect = batch["spect"]  # (1, T, F)
-            spect = spect[:, :1538, :]  # only profile first 1000 frames
-            out = streaming_predict(
-                model,
-                spect=spect,
-                window_size=args.window_size,
-                peek_size=args.peek_size,
-                device=args.device,
-                tolerance=0,
-                report=args.report,
-                hop_ms=hop_ms,
-                pace=args.pace,
-                on_step=on_step,
-                cache_conv=args.cache_conv,
-                cache_kv=args.cache_kv,
-                profiler=prof,
-            )
-            track_idx += 1
-            if limit and track_idx >= limit:
-                break
+    ) as prof:"""
+    limit = 1
+    for batch in tqdm(pred_loader, total=limit, desc="Streaming (val)", unit="track"):
+        track_id = f"track_{track_idx}"
+        spect = batch["spect"]  # (1, T, F)
+        #spect = spect[:, :1538, :]  # only profile first 1000 frames
+        out = streaming_predict(
+            model,
+            spect=spect,
+            window_size=args.window_size,
+            peek_size=args.peek_size,
+            device=args.device,
+            tolerance=0,
+            report=args.report,
+            hop_ms=hop_ms,
+            on_step=on_step,
+            cache_conv=args.cache_conv,
+            cache_kv=args.cache_kv,
+            #profiler=prof,
+        )
+        track_idx += 1
+        if limit and track_idx >= limit:
+            break
 
     # ensure all CUDA work finished before reading results
     if args.device == "cuda":
         torch.cuda.synchronize()
 
     # pick a sort key that exists for the active device
-    sort_key = "self_cuda_time_total" if args.device == "cuda" else "self_cpu_time_total"
-    print(prof.key_averages().table(sort_by=sort_key, row_limit=30))
+    """sort_key = "self_cuda_time_total" if args.device == "cuda" else "self_cpu_time_total"
+    print(prof.key_averages().table(sort_by=sort_key, row_limit=30))"""
 
     if step_times and args.report:
         s = summarize(step_times, hop_ms)
@@ -253,12 +252,6 @@ if __name__ == "__main__":
         help="Path to the model checkpoint file."
     )
     parser.add_argument(
-        "--pace",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Whether to emulate the real-time pace of an audio stream by sleeping after processing a chunk (default: False)."
-    )
-    parser.add_argument(
         "--report",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -269,6 +262,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="If set, write per step timings to csv."
+    )
+    parser.add_argument(
+        "--label-shift",
+        type=int,
+        default=0,
+        help="Sets the label shift (in frames) used during training. This is needed to align predictions with the input spectrogram. Expects a negative value for predicting future frames (default: 0)."
     )
 
     args = parser.parse_args()

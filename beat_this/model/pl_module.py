@@ -12,7 +12,7 @@ import torch
 from pytorch_lightning import LightningModule
 
 import beat_this.model.loss
-from beat_this.inference import split_predict_aggregate, streaming_predict
+from beat_this.inference import split_predict_aggregate
 from beat_this.model.beat_tracker import BeatThis
 from beat_this.model.postprocessor import Postprocessor
 from beat_this.utils import replace_state_dict_key
@@ -43,11 +43,7 @@ class PLBeatThis(LightningModule):
         causal_convolution=False,
         sw_attention_window_size=256,
         segment_metrics=False,
-        full_piece_metrics=False,
-        streaming_inference=False,
-        use_kv_cache=False,
-        use_conv_cache=False,
-        peek_size=256,
+        causal_inference=False,
         label_shift=0,
     ):
         super().__init__()
@@ -103,9 +99,13 @@ class PLBeatThis(LightningModule):
                 "loss_type must be one of 'shift_tolerant_weighted_bce', 'weighted_bce', 'bce'"
             )
 
-        self.postprocessor = Postprocessor(
-            type="dbn" if use_dbn else "minimal", fps=fps
-        )
+        if use_dbn:
+            postp_type = "dbn"
+        elif causal_inference:
+            postp_type = "causal_ema"  # placeholder TODO: dynamic option
+        else:
+            postp_type = "minimal"
+        self.postprocessor = Postprocessor(type=postp_type, fps=fps)
         self.eval_trim_beats = eval_trim_beats
         self.metrics = Metrics(eval_trim_beats=eval_trim_beats)
 
@@ -319,27 +319,15 @@ class PLBeatThis(LightningModule):
                 "When predicting full pieces, the Dataset must not pad inputs"
             )
 
-        if self.hparams.full_piece_metrics:
-            if self.hparams.streaming_inference:
-                device = batch["spect"].device
-                # compute predictions on the full piece with streaming inference
-                model_prediction = streaming_predict(
-                    model=self.model,
-                    spect=batch["spect"],
-                    window_size=self.hparams.sw_attention_window_size,
-                    peek_size=1,
-                    device=device,
-                    tolerance=0,
-                    report=False,
-                    hop_ms = 1000/self.hparams.fps, # 20 ms hop for 50 fps
-                    pace = False,
-                    on_step = None,
-                    cache_conv = False,
-                    cache_kv = self.hparams.use_kv_cache,
-                )
-            else:
-                # compute predictions for the full piece without streaming
-                model_prediction = self.model(batch["spect"])
+        if self.hparams.causal_inference:
+            # compute predictions for the full piece without splitting into chunks and apply causal postprocessing
+            model_prediction = self.model(batch["spect"])
+            # causal postprocessing
+            postp_beat, postp_downbeat = self.postprocessor(model_prediction["beat"], model_prediction["downbeat"], None)
+            # shift predictions back if needed
+            if self.hparams.label_shift != 0:
+                postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
+                postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
         else:
             # compute border size according to the loss type
             if hasattr(
@@ -358,14 +346,11 @@ class PLBeatThis(LightningModule):
                 key: value.unsqueeze(0) for key, value in model_prediction.items()
             }
 
-        # postprocess the predictions
-        postp_beat, postp_downbeat = self.postprocessor(
-            model_prediction["beat"], model_prediction["downbeat"], None
-        )
-        # shift predictions back if needed
-        if self.hparams.label_shift != 0:
-            postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
-            postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
+            # postprocess the predictions
+            postp_beat, postp_downbeat = self.postprocessor(
+                model_prediction["beat"], model_prediction["downbeat"], None
+            )
+
         # compute the metrics
         metrics = self._compute_metrics(batch, postp_beat, postp_downbeat, step="test")
         return metrics, model_prediction, batch["dataset"], batch["spect_path"]

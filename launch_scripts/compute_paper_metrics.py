@@ -17,10 +17,6 @@ seed_everything(0, workers=True)
 
 
 def main(args):
-    if not args.streaming_inference:
-        assert not args.use_kv_cache, "use_kv_cache can only be True if streaming_inference is True"
-        assert not args.use_conv_cache, "use_conv_cache can only be True if streaming_inference is True"
-
     if len(args.models) == 1:
         print("Single model prediction for", args.models[0])
         # single model prediction
@@ -28,7 +24,7 @@ def main(args):
         checkpoint = load_checkpoint(checkpoint_path)
 
         # create datamodule
-        datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit, args.max_samples)
+        datamodule = datamodule_setup(checkpoint, args.num_workers, args.datasplit)
         # create model and trainer
         model, trainer = plmodel_setup(
             checkpoint,
@@ -36,15 +32,10 @@ def main(args):
             args.dbn,
             args.gpu,
             segment_metrics=args.segment_metrics,
-            full_piece_metrics=args.full_piece_metrics,
-            streaming_inference=args.streaming_inference,
-            use_kv_cache=args.use_kv_cache,
-            use_conv_cache=args.use_kv_cache,
+            causal_inference=args.causal_inference,
         )
         # predict
-        metrics, dataset, preds, piece = compute_predictions(
-            model, trainer, datamodule.predict_dataloader()
-        )
+        metrics, dataset, preds, piece = compute_predictions(model, trainer, datamodule.predict_dataloader())
 
         # compute averaged metrics
         averaged_metrics = {k: np.mean(v) for k, v in metrics.items()}
@@ -183,7 +174,7 @@ def main(args):
             raise ValueError(f"Unknown aggregation type {args.aggregation_type}")
 
 
-def datamodule_setup(checkpoint, num_workers, datasplit, max_samples=None):
+def datamodule_setup(checkpoint, num_workers, datasplit):
     # Load the datamodule
     print("Creating datamodule")
     data_dir = Path(__file__).parent.parent.relative_to(Path.cwd()) / "data"
@@ -197,20 +188,6 @@ def datamodule_setup(checkpoint, num_workers, datasplit, max_samples=None):
     datamodule = BeatDataModule(**datamodule_hparams)
     datamodule.setup(stage="predict")
 
-    if max_samples is not None and datasplit == "val":
-        # Limit the validation items to first max_samples
-        datamodule.val_items = datamodule.val_items[:max_samples]
-        print(f"Limited validation set to first {max_samples} samples")
-        # Recreate the predict dataset with limited samples
-        datamodule.predict_dataset = BeatTrackingDataset(
-            datamodule.val_items,
-            deterministic=True,
-            augmentations={},
-            train_length=None,
-            data_folder=data_dir,
-            spect_fps=datamodule.spect_fps,
-        )
-
     return datamodule
 
 
@@ -220,10 +197,7 @@ def plmodel_setup(
         dbn,
         gpu,
         segment_metrics=False,
-        full_piece_metrics=False,
-        streaming_inference=False,
-        use_kv_cache=False,
-        use_conv_cache=False,
+        causal_inference=False,
 ):
     """
     Set up the pytorch lightning model and trainer for evaluation.
@@ -234,8 +208,7 @@ def plmodel_setup(
         dbn (bool or None): Whether to use the Dynamic Bayesian Network (DBN) module during evaluation. If None, the default behavior from the pretrained model is used.
         gpu (int): The index of the GPU device to use for training.
         segment_metrics (bool): Whether to compute metrics in 10s segments per excerpt.
-        full_piece_metrics (bool): Whether to compute metrics for the full piece without stitching.
-        streaming_inference (bool): Whether to use streaming inference with a fixed buffer and chunk size.
+        causal_inference (bool): Whether to compute metrics without stitching and to use causal postp.
 
     Returns:
         tuple: A tuple containing the initialized pytorch lightning model and trainer.
@@ -246,10 +219,7 @@ def plmodel_setup(
     if dbn is not None:
         checkpoint["hyper_parameters"]["use_dbn"] = dbn
     checkpoint["hyper_parameters"]["segment_metrics"] = segment_metrics
-    checkpoint["hyper_parameters"]["full_piece_metrics"] = full_piece_metrics
-    checkpoint["hyper_parameters"]["streaming_inference"] = streaming_inference
-    checkpoint["hyper_parameters"]["use_kv_cache"] = use_kv_cache
-    checkpoint["hyper_parameters"]["use_conv_cache"] = use_conv_cache
+    checkpoint["hyper_parameters"]["causal_inference"] = causal_inference
 
     model = PLBeatThis(**checkpoint["hyper_parameters"])
     model.load_state_dict(checkpoint["state_dict"])
@@ -356,34 +326,10 @@ if __name__ == "__main__":
         help="W&B run ID of the run which the evaluation metrics will be uploaded to."
     )
     parser.add_argument(
-        "--full_piece_metrics",
+        "--causal_inference",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="If True, compute metrics for the full piece instead of segments or stitched-together excerpts of size chunk_size."
-    )
-    parser.add_argument(
-        "--streaming_inference",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Predictions in streaming mode with a fixed buffer and peek size. By default, peek size is a single frame."
-    )
-    parser.add_argument(
-        "--use_kv_cache",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="If True, use key-value caching for transformer layers during streaming inference. Should ONLY be used if streaming_inference is True."
-    )
-    parser.add_argument(
-        "--use_conv_cache",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="If True, use cached convolutions during streaming inference. Should ONLY be used if streaming_inference is True."
-    )
-    parser.add_argument(
-        "--max_samples",
-        type=int,
-        default=None,
-        help="If set, only use this many samples from the validation set"
+        help="If True, compute metrics for the full piece instead of segments or stitched-together excerpts of size chunk_size and apply causal postprocessing."
     )
 
     args = parser.parse_args()

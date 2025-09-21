@@ -235,40 +235,36 @@ def split_predict_aggregate(
     return {"beat": piece_prediction_beat, "downbeat": piece_prediction_downbeat}
 
 
-def streaming_predict(
+def emulated_streaming_predict(
     model: torch.nn.Module,
     spect: torch.Tensor,
     window_size: int,
-    peek_size: int,
     device: torch.device = None,
     tolerance: int = 3,
     report: bool = False,
     hop_ms: int = 20,
-    pace: bool = False,
     on_step = None,
     cache_conv: bool = False,
     cache_kv: bool = False,
     profiler = None,
 ) -> dict:
     """
-    Run a full-song spectrogram through model in streaming, fixed-memory mode. The GPU memory should ideally hold only
-    the following (all of which are fixed):
-    - the model weights
-    - the spectrogram buffer of size (window_size, F)
-    - chunks of size (peek_size, F) that are passed to the model
-    Also comes with the option of emulating real streaming and reporting back latency-related metrics.
+    Run a full-song spectrogram through model in emulated streaming mode. The goal here is not to measure the performance
+    of the model in terms of quality, but whether it can deliver predictions on time. We calculate time metrics to measure
+    the effect of kv caching, label shifting, different window sizes, etc.
 
     Args:
         model:       the model to run
         spect:       tensor of shape (1, T, F)
-        window_size: number of frames the model sees at once
-        peek_size:   look-ahead size (nr of new frames to add to the buffer)
+        window_size: number of frames the model sees at once (buffer size)
         device:      device to run the model on
         tolerance:   tolerance for ShiftTolerantBCELoss which the model was trained with
-        report:      whether to report the latency metrics
+        report:      whether to report the latency metrics as a csv
         hop_ms:      hop size in milliseconds for the spectrogram
-        pace:        whether to emulate real-time pacing of the model
         on_step:     function to call on each step, e.g., for logging
+        cache_conv:  whether to cache convolutional layers for faster inference
+        cache_kv:    whether to cache keys and values for attention for faster inference
+        profiler:    optional PyTorch profiler to use to investigate the calculating time of each step
 
     Returns:
         dict:       dictionary containing 'beat' and 'downbeat' predictions
@@ -277,9 +273,7 @@ def streaming_predict(
     model.eval()
     spect = spect.to(device)
     B, T, F = spect.shape
-
-    print("\nModel Architecture:")
-    print(model)
+    peek_size = 1 # fixed peek size of 1 frame (20ms)
 
     # we “reserve” pad_size frames at the end of each chunk that are never used to counteract the effect of using
     # ShiftTolerantBCELoss during training
@@ -301,12 +295,11 @@ def streaming_predict(
     while frame_idx < T:
         #print(f"Processing frame {frame_idx}/{T} (chunk {k})")
         # timing diagnostics
-        if pace:
-            wall_start = time.monotonic()
-            if device == "cuda":
-                start_evt = torch.cuda.Event(enable_timing=True)
-                end_evt = torch.cuda.Event(enable_timing=True)
-                start_evt.record()
+        wall_start = time.monotonic()
+        if device == "cuda":
+            start_evt = torch.cuda.Event(enable_timing=True)
+            end_evt = torch.cuda.Event(enable_timing=True)
+            start_evt.record()
 
         # get new frames
         end = min(T, frame_idx + peek_size)
@@ -335,21 +328,20 @@ def streaming_predict(
             shapes = [(k.shape, v.shape) for k, v in past]
             print(f"KV cache shapes: {shapes}")'''
 
-        if pace:
-            wall_ms = (time.monotonic() - wall_start) * 1000.0
-            if device == "cuda":
-                end_evt.record()
-                end_evt.synchronize()
-                gpu_ms = start_evt.elapsed_time(end_evt)
+        wall_ms = (time.monotonic() - wall_start) * 1000.0
+        if device == "cuda":
+            end_evt.record()
+            end_evt.synchronize()
+            gpu_ms = start_evt.elapsed_time(end_evt)
 
-            late_ms = 0.0
-            frames_done += end - frame_idx
-            deadline = t0 + frames_done * hop_s
-            now = time.monotonic()
-            if now < deadline:
-                time.sleep(deadline - now)
-            else:
-                late_ms = (now - deadline) * 1000.0 # prediction lateness in ms
+        late_ms = 0.0
+        frames_done += end - frame_idx
+        deadline = t0 + frames_done * hop_s
+        now = time.monotonic()
+        if now < deadline:
+            time.sleep(deadline - now)
+        else:
+            late_ms = (now - deadline) * 1000.0
 
         if report:
             if on_step is not None:

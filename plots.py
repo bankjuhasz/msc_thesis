@@ -34,14 +34,12 @@ def plot_gradients_over_time(
         # grad of the frame prediction w.r.t. input
         chosen_prediction = beat_output[0, chosen_frame].sum()
         chosen_prediction.backward()
-
     elif target == "frontend_output":
         x_feat = model.frontend(input_tensor)
         x_feat.retain_grad()
 
         feat_scalar = x_feat[0, chosen_frame].sum()
         feat_scalar.backward()
-
     else:
         raise ValueError("target must be either 'model_output' or 'frontend_output'")
 

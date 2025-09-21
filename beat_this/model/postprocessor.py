@@ -22,7 +22,7 @@ class Postprocessor:
     """
 
     def __init__(self, type: str = "minimal", fps: int = 50):
-        assert type in ["minimal", "dbn"]
+        assert type in ["minimal", "dbn", "no_postprocessing", "causal_ema", "particle_filter", "forward_HMM"]
         self.type = type
         self.fps = fps
         if type == "dbn":
@@ -71,6 +71,14 @@ class Postprocessor:
             )
         elif self.type == "dbn":
             postp_beat, postp_downbeat = self.postp_dbn(beat, downbeat, padding_mask)
+        elif self.type == "no_postprocessing":
+            postp_beat, postp_downbeat = self.no_postprocessing(beat, downbeat, padding_mask)
+        elif self.type == "causal_ema":
+            postp_beat, postp_downbeat = self.causal_ema(beat, downbeat, padding_mask)
+        elif self.type == "particle_filter":
+            postp_beat, postp_downbeat = self.particle_filter(beat, downbeat, padding_mask)
+        elif self.type == "forward_HMM":
+            postp_beat, postp_downbeat = self.forward_HMM(beat, downbeat, padding_mask)
         else:
             raise ValueError("Invalid postprocessing type")
 
@@ -171,6 +179,150 @@ class Postprocessor:
         postp_beat = dbn_out[:, 0]
         postp_downbeat = dbn_out[dbn_out[:, 1] == 1][:, 0]
         return postp_beat, postp_downbeat
+
+    def no_postprocessing(self, beat, downbeat, padding_mask):
+        """ Does no real postprocessing, just returns the times, where the beat/downbeat prediction is over 0.5 """
+        # Ensure batched shape
+        if beat.ndim == 1:
+            beat = beat.unsqueeze(0)
+            downbeat = downbeat.unsqueeze(0)
+            padding_mask = padding_mask.unsqueeze(0)
+        batch_size = beat.shape[0]
+        postp_beat = []
+        postp_downbeat = []
+        for i in range(batch_size):
+            mask = padding_mask[i]
+            beat_frames = torch.nonzero((beat[i] > 0.5) & mask).cpu().numpy()[:, 0]
+            downbeat_frames = torch.nonzero((downbeat[i] > 0.5) & mask).cpu().numpy()[:, 0]
+            postp_beat.append(beat_frames / self.fps)
+            postp_downbeat.append(downbeat_frames / self.fps)
+        return tuple(postp_beat), tuple(postp_downbeat)
+
+    def causal_ema(self,
+        beat: torch.Tensor,
+        downbeat: torch.Tensor,
+        padding_mask: torch.Tensor,
+        *,
+        alpha_b: float = 0.85,      # EMA smoothing for beat stream
+        alpha_d: float = 0.85,      # EMA smoothing for downbeat stream
+        stats_decay: float = 0.98,  # decay for baseline mean/absdev
+        k_h_b: float = 1.6,         # beat high threshold multiplier
+        k_l_b: float = 0.8,         # beat low threshold multiplier (hysteresis)
+        k_h_d: float = 1.8,         # downbeat high threshold multiplier
+        bpm_min: int = 60,          # plausible tempo range (min BPM)
+        bpm_max: int = 200,         # plausible tempo range (max BPM)
+        ibi_ema: float = 0.10,      # how fast to adapt IBI estimate
+        min_gap_factor: float = 0.5 # min gap as fraction of IBI_hat
+    ):
+        """
+        Strictly causal, zero-lookahead post-processing:
+          - EMA smoothing per stream (beat/downbeat)
+          - adaptive Schmitt trigger (high/low thresholds) for beats
+          - refractory/tempo guard using an EMA IBI estimate
+          - downbeat = 'instant' decision at the same frame as beat if downbeat stream is high
+        Returns:
+          (tuple(np.ndarray), tuple(np.ndarray)) with times in seconds, one array per batch item.
+        """
+        # ensure batched shape
+        if beat.ndim == 1:
+            beat = beat.unsqueeze(0)
+            downbeat = downbeat.unsqueeze(0)
+            padding_mask = padding_mask.unsqueeze(0)
+
+        B, T = beat.shape[0], beat.shape[-1]
+        postp_beat = []
+        postp_downbeat = []
+
+        # convert BPM --> frame gaps using self.fps
+        fps = float(self.fps)
+        ibi_min = max(1, int(round((60.0 / bpm_max) * fps))) # fastest plausible beat spacing, in frames
+        ibi_max = max(ibi_min + 1, int(round((60.0 / bpm_min) * fps))) # slowest plausible beat spacing
+
+        for i in range(B):
+            # states for beat stream
+            sB = 0.0; muB = 0.0; sigB = 0.0
+            armed = True
+            last_beat = -10**9
+            IBI_hat = (ibi_min + ibi_max) // 2
+
+            # states for downbeat stream
+            sD = 0.0; muD = 0.0; sigD = 0.0
+
+            beat_times = []
+            down_times = []
+
+            mask_i = padding_mask[i].bool()
+            beat_i = beat[i]
+            down_i = downbeat[i]
+
+            def upd_stats(x, mu, sig):
+                mu = stats_decay * mu + (1.0 - stats_decay) * x
+                sig = stats_decay * sig + (1.0 - stats_decay) * abs(x - mu)
+                return mu, sig
+
+            for t in range(T):
+                if not mask_i[t]:
+                    # do not update states on padded frames, just skip.
+                    continue
+
+                # smooth both streams (strictly causal)
+                aB = float(beat_i[t])
+                aD = float(down_i[t])
+                sB = alpha_b * sB + (1.0 - alpha_b) * aB
+                sD = alpha_d * sD + (1.0 - alpha_d) * aD
+
+                # update causal baselines (mean & absdev)
+                muB, sigB = upd_stats(sB, muB, sigB)
+                muD, sigD = upd_stats(sD, muD, sigD)
+
+                # adaptive thresholds
+                # avoid zero sigma (flat regions)
+                eps = 1e-6
+                highB = muB + k_h_b * max(sigB, eps)
+                lowB  = muB + k_l_b * max(sigB, eps)
+                highD = muD + k_h_d * max(sigD, eps)
+
+                # hysteresis: re-arm once below low threshold
+                if sB < lowB:
+                    armed = True
+
+                # refractory / tempo guard
+                min_gap = max(ibi_min, int(min_gap_factor * IBI_hat))
+                can_fire = (t - last_beat) >= min_gap
+
+                # zero-latency firing at current frame (no lookahead, no rewrite)
+                if armed and can_fire and sB >= highB:
+                    time_sec = t / fps
+                    beat_times.append(time_sec)
+
+                    # update tempo estimate from last beat
+                    if last_beat > -10**8:
+                        gap = t - last_beat
+                        gap = max(ibi_min, min(ibi_max * 2, gap))   # clamp to sane range
+                        IBI_hat = int((1.0 - ibi_ema) * IBI_hat + ibi_ema * gap)
+                        IBI_hat = max(ibi_min, min(ibi_max, IBI_hat))
+
+                    last_beat = t
+                    armed = False
+
+                    # downbeat = instant decision at the same frame
+                    if sD >= highD:
+                        down_times.append(time_sec)
+
+            postp_beat.append(torch.tensor(beat_times, dtype=torch.float32).cpu().numpy())
+            postp_downbeat.append(torch.tensor(down_times, dtype=torch.float32).cpu().numpy())
+
+        return tuple(postp_beat), tuple(postp_downbeat)
+
+
+    def forward_HMM(self):
+        """ TODO """
+        pass
+
+
+    def particle_filter(self, beat, downbeat, padding_mask):
+        """ TODO """
+        pass
 
 
 def deduplicate_peaks(peaks, width=1) -> np.ndarray:
