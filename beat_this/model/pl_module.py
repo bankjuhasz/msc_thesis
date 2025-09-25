@@ -102,7 +102,7 @@ class PLBeatThis(LightningModule):
         if use_dbn:
             postp_type = "dbn"
         elif causal_inference:
-            postp_type = "causal_ema"  # placeholder TODO: dynamic option
+            postp_type = "causal_thresholding"  # placeholder TODO: dynamic option
         else:
             postp_type = "minimal"
         self.postprocessor = Postprocessor(type=postp_type, fps=fps)
