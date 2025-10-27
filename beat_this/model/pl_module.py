@@ -330,9 +330,9 @@ class PLBeatThis(LightningModule):
             # causal postprocessing
             postp_beat, postp_downbeat = self.postprocessor(model_prediction["beat"], model_prediction["downbeat"], None)
             # shift predictions back if needed
-            if self.hparams.label_shift != 0:
-                postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
-                postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
+            #if self.hparams.label_shift != 0:
+            #    postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
+            #    postp_downbeat = self.shift_predictions(postp_downbeat, self.hparams.label_shift, self.hparams.fps)
         else:
             # compute border size according to the loss type
             if hasattr(

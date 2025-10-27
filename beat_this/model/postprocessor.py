@@ -236,7 +236,7 @@ class Postprocessor:
 
         return tuple(postp_beat), tuple(postp_downbeat)
 
-    def shifted_causal_local_max(self, beat, downbeat, threshold=1.5, shift=3, cooldown=5):
+    def shifted_causal_local_max(self, beat, downbeat, threshold=1, shift=3, cooldown=5):
         """ Causal local max detection with a shift/lookahead of `shift` frames. Makes use of the fact that shifted
         models look `shift` frames into the future in order to identify local maxima more reliably."""
         # Ensure batched shape
@@ -262,16 +262,16 @@ class Postprocessor:
             winD: list[float] = []
 
             for t in range(T):
-                # Append current votes (these are for target τ = t + shift)
+                # append current votes
                 winB.append(float(beat[i, t]))
                 winD.append(float(downbeat[i, t]))
 
-                # Keep only the last 2*shift+1 entries
+                # keep only the last 2*shift+1 entries
                 if len(winB) > win_len:
                     winB.pop(0)
                     winD.pop(0)
 
-                # Need a full symmetric window to decide (i.e., we know up to τ+shift)
+                # need a full symmetric window to decide
                 if len(winB) < win_len:
                     continue
 
@@ -282,12 +282,12 @@ class Postprocessor:
                 neigh_max_B = max(leftB + rightB) if (leftB or rightB) else float("-inf")
 
                 if cB >= threshold and cB >= neigh_max_B and (t - last_beat) >= cooldown:
-                    # Emit beat *at t* (center-only, no snapping)
+                    # only emit beat if: above threshold, is a local max in the center of the window, and cooldown passed
                     time_s = t / fps
                     beat_times.append(time_s)
                     last_beat = t
 
-                    # DOWNBEAT: beat-gated, center-only local max with 2x cooldown
+                    # downbeats --> same logic, but only if there was a beat
                     cD = winD[center_idx]
                     leftD = winD[:center_idx]
                     rightD = winD[center_idx + 1:]
