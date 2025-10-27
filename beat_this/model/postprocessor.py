@@ -22,7 +22,7 @@ class Postprocessor:
     """
 
     def __init__(self, type: str = "minimal", fps: int = 50):
-        assert type in ["minimal", "dbn", "no_postprocessing", "causal_thresholding", "causal_ema", "particle_filter", "forward_HMM"]
+        assert type in ["minimal", "dbn", "no_postprocessing", "causal_thresholding", "causal_ema", "shifted_causal_local_max"]
         self.type = type
         self.fps = fps
         if type == "dbn":
@@ -75,12 +75,10 @@ class Postprocessor:
             postp_beat, postp_downbeat = self.no_postprocessing(beat, downbeat, padding_mask)
         elif self.type == "causal_thresholding":
             postp_beat, postp_downbeat = self.causal_thresholding(beat, downbeat)
+        elif self.type == "shifted_causal_local_max":
+            postp_beat, postp_downbeat = self.shifted_causal_local_max(beat, downbeat)
         elif self.type == "causal_ema":
             postp_beat, postp_downbeat = self.causal_ema(beat, downbeat, padding_mask)
-        elif self.type == "particle_filter":
-            postp_beat, postp_downbeat = self.particle_filter(beat, downbeat, padding_mask)
-        elif self.type == "forward_HMM":
-            postp_beat, postp_downbeat = self.forward_HMM(beat, downbeat, padding_mask)
         else:
             raise ValueError("Invalid postprocessing type")
 
@@ -200,7 +198,7 @@ class Postprocessor:
             postp_downbeat.append(downbeat_frames / self.fps)
         return tuple(postp_beat), tuple(postp_downbeat)
 
-    def causal_thresholding(self, beat, downbeat, threshold=2, cooldown=5):
+    def causal_thresholding(self, beat, downbeat, threshold=1.75, cooldown=5):
         """ Simple causal thresholding: a beat/downbeat is detected if the activation is above threshold, but there is
         a cooldown period (measured in FRAMES) after each detection, during which no new beat/downbeat can be detected."""
         # Ensure batched shape
@@ -237,6 +235,73 @@ class Postprocessor:
             postp_downbeat.append(np.array(down_times, dtype=np.float32))
 
         return tuple(postp_beat), tuple(postp_downbeat)
+
+    def shifted_causal_local_max(self, beat, downbeat, threshold=1.5, shift=3, cooldown=5):
+        """ Causal local max detection with a shift/lookahead of `shift` frames. Makes use of the fact that shifted
+        models look `shift` frames into the future in order to identify local maxima more reliably."""
+        # Ensure batched shape
+        if beat.ndim == 1:
+            beat = beat.unsqueeze(0)
+            downbeat = downbeat.unsqueeze(0)
+
+        B, T = beat.shape[0], beat.shape[1]
+        fps = float(self.fps)
+        db_cooldown = 2 * int(cooldown)
+
+        postp_beat, postp_down = [], []
+        win_len = 2 * shift + 1
+        center_idx = shift
+
+        for i in range(B):
+            beat_times, down_times = [], []
+            last_beat = -10 ** 9
+            last_down = -10 ** 9
+
+            # sliding windows for beats and downbeats
+            winB: list[float] = []
+            winD: list[float] = []
+
+            for t in range(T):
+                # Append current votes (these are for target τ = t + shift)
+                winB.append(float(beat[i, t]))
+                winD.append(float(downbeat[i, t]))
+
+                # Keep only the last 2*shift+1 entries
+                if len(winB) > win_len:
+                    winB.pop(0)
+                    winD.pop(0)
+
+                # Need a full symmetric window to decide (i.e., we know up to τ+shift)
+                if len(winB) < win_len:
+                    continue
+
+                # Center-only local max for BEAT at τ = t
+                cB = winB[center_idx]
+                leftB = winB[:center_idx]
+                rightB = winB[center_idx + 1:]
+                neigh_max_B = max(leftB + rightB) if (leftB or rightB) else float("-inf")
+
+                if cB >= threshold and cB >= neigh_max_B and (t - last_beat) >= cooldown:
+                    # Emit beat *at t* (center-only, no snapping)
+                    time_s = t / fps
+                    beat_times.append(time_s)
+                    last_beat = t
+
+                    # DOWNBEAT: beat-gated, center-only local max with 2x cooldown
+                    cD = winD[center_idx]
+                    leftD = winD[:center_idx]
+                    rightD = winD[center_idx + 1:]
+                    neigh_max_D = max(leftD + rightD) if (leftD or rightD) else float("-inf")
+
+                    if cD >= threshold and cD >= neigh_max_D and (t - last_down) >= db_cooldown:
+                        down_times.append(time_s)
+                        last_down = t
+
+            postp_beat.append(np.array(beat_times, dtype=np.float32))
+            postp_down.append(np.array(down_times, dtype=np.float32))
+
+        return tuple(postp_beat), tuple(postp_down)
+
 
     def causal_ema(self,
         beat: torch.Tensor,
@@ -353,16 +418,6 @@ class Postprocessor:
             postp_downbeat.append(torch.tensor(down_times, dtype=torch.float32).cpu().numpy())
 
         return tuple(postp_beat), tuple(postp_downbeat)
-
-
-    def forward_HMM(self):
-        """ TODO """
-        pass
-
-
-    def particle_filter(self, beat, downbeat, padding_mask):
-        """ TODO """
-        pass
 
 
 def deduplicate_peaks(peaks, width=1) -> np.ndarray:

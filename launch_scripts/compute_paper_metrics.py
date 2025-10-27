@@ -65,23 +65,30 @@ def main(args):
                 run_path = 'bank_juhasz_msc_thesis/beat_this/' + args.update_wandb
                 run = api.run(run_path)
 
+                '''
                 filtered_metrics = {
                     k: v
                     for k, v in averaged_metrics.items()
                     if re.match(r'segment_\d+_F-measure_(beat|downbeat)$', k)
+                }'''
+
+                to_be_updated = {
+                    "F-measure_beat",
+                    "F-measure_downbeat",
+                    "Precision_beat",
+                    "Precision_downbeat",
+                    "Recall_beat",
+                    "Recall_downbeat",
                 }
 
-                # adding datasplit for clarity
-                upload_package = {
-                    f"{args.datasplit}_{k}": v
-                    for k, v in filtered_metrics.items()
-                }
+                filtered_metrics = {k: v for k, v in averaged_metrics.items() if k in to_be_updated}
+                upload_package = {f"{args.datasplit}_{k}": v for k, v in filtered_metrics.items()} # adding datasplit for clarity
 
                 if not upload_package:
-                    print("No F-measure metrics found to upload.")
+                    print("No metrics found to upload.")
                 else:
                     run.summary.update(upload_package)
-                    print(f"Uploaded F-measure metrics: {sorted(upload_package.keys())}")
+                    print(f"Uploaded metrics: {sorted(upload_package.keys())}")
 
             except Exception as e:
                 print(f'wandb metrics update failed due to the following error: {e}')

@@ -45,6 +45,11 @@ class PLBeatThis(LightningModule):
         segment_metrics=False,
         causal_inference=False,
         label_shift=0,
+        full_piece_metrics=False, # to be removed
+        streaming_inference=False, # to be removed
+        use_kv_cache=False, # to be removed
+        use_conv_cache=False, # to be removed
+        peek_size=False, # to be removed
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -102,7 +107,7 @@ class PLBeatThis(LightningModule):
         if use_dbn:
             postp_type = "dbn"
         elif causal_inference:
-            postp_type = "causal_thresholding"  # placeholder TODO: dynamic option
+            postp_type = "shifted_causal_local_max" #"causal_thresholding"  # placeholder TODO: dynamic option
         else:
             postp_type = "minimal"
         self.postprocessor = Postprocessor(type=postp_type, fps=fps)
@@ -420,9 +425,21 @@ class Metrics:
             CMLc, CMLt, AMLc, AMLt = mir_eval.beat.continuity(truth, preds)
             fmeasure = mir_eval.beat.f_measure(truth, preds)
             cemgil = mir_eval.beat.cemgil(truth, preds)
-            return {"F-measure": fmeasure, "Cemgil": cemgil, "CMLt": CMLt, "AMLt": AMLt}
+            precision, recall = self._calc_precision_and_recall(truth, preds)
+            return {"F-measure": fmeasure, "Cemgil": cemgil, "CMLt": CMLt, "AMLt": AMLt, "Precision": precision, "Recall": recall}
         else:
             raise ValueError("step must be either val or test")
+
+    @staticmethod
+    def _calc_precision_and_recall(ref, est, window=0.07):
+        matching = mir_eval.util.match_events(ref, est, window)
+        tp = len(matching)
+        fp = len(est) - tp
+        fn = len(ref) - tp
+
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        return precision, recall
 
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
