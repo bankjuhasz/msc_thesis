@@ -107,7 +107,10 @@ class PLBeatThis(LightningModule):
         if use_dbn:
             postp_type = "dbn"
         elif causal_inference:
-            postp_type = "shifted_causal_local_max" #"causal_thresholding"  # placeholder TODO: dynamic option
+            if self.hparams.label_shift > 0:
+                postp_type = "shifted_causal_local_max"
+            else:
+                postp_type = "causal_thresholding"
         else:
             postp_type = "minimal"
         self.postprocessor = Postprocessor(type=postp_type, fps=fps)
@@ -328,7 +331,7 @@ class PLBeatThis(LightningModule):
             # compute predictions for the full piece without splitting into chunks and apply causal postprocessing
             model_prediction = self.model(batch["spect"])
             # causal postprocessing
-            postp_beat, postp_downbeat = self.postprocessor(model_prediction["beat"], model_prediction["downbeat"], None)
+            postp_beat, postp_downbeat = self.postprocessor(model_prediction["beat"], model_prediction["downbeat"], shift=self.hparams.label_shift)
             # shift predictions back if needed
             #if self.hparams.label_shift != 0:
             #    postp_beat = self.shift_predictions(postp_beat, self.hparams.label_shift, self.hparams.fps)
