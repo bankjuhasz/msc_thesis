@@ -24,11 +24,12 @@ Here is a list of the current tasks:
 - [x] Implement a sliding window attention using flexattention
 - [ ] Cached convolutions (IN PROGRESS - maybe skip?)
 - [x] Cached attention (KV caching)
-- [ ] Train with shifted labels and analyze the impact on model performance (IN PROGRESS)
+- [x] Train with shifted labels and analyze the impact on model performance
 - [x] Implement an emulated_streaming prediction pipeline to measure prediction _speed_
-- [x] Implement a streaming prediction pipeline with causal postprocessing (IN PROGRESS)
+- [x] Implement a streaming prediction pipeline with causal postprocessing
   - [x] Causal thresholding
   - [x] Shifted causal local max
+  - [x] Finetuning thresholds, coupling, etc.
 - [ ] Compare performance of vanilla streaming, cached convs and KV caching (IN PROGRESS)
 
 As the project progresses, this ReadMe will be updated to reflect the current state of the live version. You can read
