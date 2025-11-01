@@ -236,9 +236,10 @@ class Postprocessor:
 
         return tuple(postp_beat), tuple(postp_downbeat)
 
-    def shifted_causal_local_max(self, beat, downbeat, threshold=1, shift=3, cooldown=5):
+    def shifted_causal_local_max(self, beat, downbeat, threshold=1, shift=3, cooldown=5, db_anywhere=True):
         """ Causal local max detection with a shift/lookahead of `shift` frames. Makes use of the fact that shifted
         models look `shift` frames into the future in order to identify local maxima more reliably."""
+
         # Ensure batched shape
         if beat.ndim == 1:
             beat = beat.unsqueeze(0)
@@ -251,6 +252,9 @@ class Postprocessor:
         postp_beat, postp_down = [], []
         win_len = 2 * shift + 1
         center_idx = shift
+
+        ### TEST
+        db_threshold = threshold * 1 #.5
 
         for i in range(B):
             beat_times, down_times = [], []
@@ -287,15 +291,23 @@ class Postprocessor:
                     beat_times.append(time_s)
                     last_beat = t
 
-                    # downbeats --> same logic, but only if there was a beat
-                    cD = winD[center_idx]
-                    leftD = winD[:center_idx]
-                    rightD = winD[center_idx + 1:]
-                    neigh_max_D = max(leftD + rightD) if (leftD or rightD) else float("-inf")
+                    if db_anywhere:
+                        # downbeats --> can be anywhere in the window
+                        maxD = max(winD)
+                        if maxD >= db_threshold and (t - last_down) >= db_cooldown:
+                            down_times.append(time_s)
+                            last_down = t
 
-                    if cD >= threshold and cD >= neigh_max_D and (t - last_down) >= db_cooldown:
-                        down_times.append(time_s)
-                        last_down = t
+                    else:
+                        # downbeats --> same logic as beats, but only if there was a beat
+                        cD = winD[center_idx]
+                        leftD = winD[:center_idx]
+                        rightD = winD[center_idx + 1:]
+                        neigh_max_D = max(leftD + rightD) if (leftD or rightD) else float("-inf")
+
+                        if cD >= threshold and cD >= neigh_max_D and (t - last_down) >= db_cooldown:
+                            down_times.append(time_s)
+                            last_down = t
 
             postp_beat.append(np.array(beat_times, dtype=np.float32))
             postp_down.append(np.array(down_times, dtype=np.float32))
