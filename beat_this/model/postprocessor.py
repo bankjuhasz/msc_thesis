@@ -208,6 +208,7 @@ class Postprocessor:
         B, T = beat.shape[0], beat.shape[1]
         fps = float(self.fps)
         db_cooldown = 2 * int(cooldown)
+        db_threshold = threshold * 0.4
 
         postp_beat, postp_downbeat = [], []
 
@@ -226,7 +227,7 @@ class Postprocessor:
                     beat_times.append(t_sec)
                     last_beat = t
 
-                    if d > threshold and (t - last_down) >= db_cooldown:
+                    if d > db_threshold and (t - last_down) >= db_cooldown:
                         down_times.append(t_sec)
                         last_down = t
 
